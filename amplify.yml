@@ -3,7 +3,8 @@ frontend:
   phases:
     preBuild:
       commands:
-        - npm ci
+        - npm cache clean --force
+        - npm ci --omit=optional
     build:
       commands:
         - export CI=false
