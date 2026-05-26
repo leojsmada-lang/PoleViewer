@@ -107,7 +107,7 @@ async function loadTile(
     if (!res.ok) return null;
 
     const buffer = await res.arrayBuffer();
-    return decodeLaz(buffer, manifest);
+    return parseLasHeader(buffer);
   } catch {
     return null;
   }
