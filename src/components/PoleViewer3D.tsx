@@ -26,6 +26,16 @@ interface PoleViewer3DProps {
     pole: Pole; // the pole to render — changing this prop re-runs the entire useEffect
 }
 
+// Convert WGS84 lat/lng to EPSG:3857 (Web Mercator) metres — the same CRS the
+// USGS LiDAR EPT tiles use. This lets us centre the point cloud on the pole's
+// real-world position rather than the dataset centroid, which can be 100+ km away.
+function latLngToWebMercator(lat: number, lng: number): [number, number] {
+    const R = 6378137.0; // WGS84 semi-major axis in metres
+    const x = lng * (Math.PI / 180) * R;
+    const y = Math.log(Math.tan(Math.PI / 4 + lat * (Math.PI / 360))) * R;
+    return [x, y];
+}
+
 // Color map for the wire/insulator on each attachment type (as hex integers, not strings)
 const attachmentColors: Record<string, number> = {
     Power:   0xFF2222, // red
@@ -73,7 +83,7 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         //   w/h = aspect ratio (must match the renderer size or the image will stretch)
         //   0.1 = near clipping plane — objects closer than this are not drawn
         //   1000 = far clipping plane — objects farther than this are not drawn
-        const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 5000);
         camera.position.set(15, pole.height * 0.7, 20);
         camera.lookAt(0, pole.height * 0.5, 0); // aim the camera at the mid-point of the pole
 
@@ -129,7 +139,7 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         const onMouseUp = () => { isMouseDown = false; };
         const onWheel = (e: WheelEvent) => {
             // deltaY is positive when scrolling down (zoom out), negative when scrolling up (zoom in)
-            radius = Math.max(5, Math.min(80, radius + e.deltaY * 0.05));
+            radius = Math.max(5, Math.min(500, radius + e.deltaY * 0.05));
             updateCamera();
         };
 
@@ -298,26 +308,29 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 setLidarProgress(93);
 
                 // 4. Center and remap axes.
-                //    USGS LiDAR uses projected CRS (meters), Z = elevation.
+                //    USGS LiDAR uses projected CRS (EPSG:3857, metres), Z = elevation.
                 //    Three.js uses Y = elevation. We:
-                //      a) compute the centroid and subtract it (so the cloud is at world origin)
-                //      b) swap Z→Y and Y→−Z to match Three.js conventions
-                let cx = 0, cy = 0, cz = 0;
+                //      a) subtract the pole's EPSG:3857 position (NOT the cloud centroid)
+                //         so that world-origin (0,0,0) is directly below the pole.
+                //         Using the cloud centroid instead would put the terrain 100+ km
+                //         away from the camera, making it invisible.
+                //      b) swap Z→Y and Y→-Z to match Three.js conventions
+                const [poleEasting, poleNorthing] = latLngToWebMercator(pole.latitude, pole.longitude);
+
+                // Keep elevation centred on the cloud mean so the minY shift below
+                // brings the lowest point to Y=0 regardless of absolute altitude.
+                let cz = 0;
                 for (let i = 0; i < chunk.count; i++) {
-                    cx += chunk.positions[i * 3 + 0];
-                    cy += chunk.positions[i * 3 + 1];
                     cz += chunk.positions[i * 3 + 2];
                 }
-                cx /= chunk.count;
-                cy /= chunk.count;
                 cz /= chunk.count;
 
                 const translated = new Float32Array(chunk.count * 3);
                 let minY = Infinity;
                 for (let i = 0; i < chunk.count; i++) {
-                    translated[i * 3 + 0] = chunk.positions[i * 3 + 0] - cx;    // X stays X
-                    translated[i * 3 + 1] = chunk.positions[i * 3 + 2] - cz;    // LiDAR Z (up) → Three.js Y
-                    translated[i * 3 + 2] = -(chunk.positions[i * 3 + 1] - cy); // LiDAR Y → Three.js -Z
+                    translated[i * 3 + 0] = chunk.positions[i * 3 + 0] - poleEasting;    // X stays X (easting offset)
+                    translated[i * 3 + 1] = chunk.positions[i * 3 + 2] - cz;             // LiDAR Z (elevation) → Three.js Y
+                    translated[i * 3 + 2] = -(chunk.positions[i * 3 + 1] - poleNorthing);// LiDAR Y (northing) → Three.js -Z
                     if (translated[i * 3 + 1] < minY) minY = translated[i * 3 + 1];
                 }
                 // Shift the whole cloud so the lowest point sits at Y=0 (ground level)
@@ -359,7 +372,9 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 //   vertexColors: true means use the 'color' attribute instead of a single material color
                 //   sizeAttenuation: true means points farther from the camera appear smaller (perspective)
                 const material = new THREE.PointsMaterial({
-                    size: 0.18,
+                    // 2m per point matches the typical spacing of depth-3 EPT tiles
+                    // (~78m average) while still showing dense clusters near the pole.
+                    size: 2.0,
                     vertexColors: true,
                     sizeAttenuation: true,
                 });
