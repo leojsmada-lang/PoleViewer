@@ -290,13 +290,22 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 if (!isMounted) return;
                 setLidarProgress(25);
 
-                // 3. Stream point cloud tiles (depth 3 = ~hundreds of tiles, ~300K pts)
+                // 3. Stream point cloud tiles near the pole.
+                //    minDepth=2 skips the coarse root/level-1 tiles that cover the whole
+                //    250 km dataset — loading those first would exhaust the point budget
+                //    before we reach the fine-grained tiles near the pole.
+                //    centerX/centerY + radiusMeters narrows the tile search to a 50 km
+                //    circle around the pole so we don't fetch the entire dataset.
+                const [centerX, centerY] = latLngToWebMercator(pole.latitude, pole.longitude);
                 setLidarStage('Streaming point cloud tiles...');
                 const chunk = await loadEptPointCloud(dataset.eptUrl, manifest, {
                     maxPoints: 400_000,
                     maxDepth: 3,
+                    minDepth: 2,
+                    centerX,
+                    centerY,
+                    radiusMeters: 50_000,
                     onProgress: (loaded, total) => {
-                        // Map tile loading progress to the 25–90% range of the progress bar
                         if (isMounted) setLidarProgress(25 + Math.floor((loaded / total) * 65));
                     },
                 });
@@ -336,7 +345,7 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 // Using a local baseline avoids far-away low-elevation points (e.g. coastal
                 // areas in the same EPT dataset) dragging the ground plane hundreds of
                 // metres below the actual terrain at the pole's location.
-                const LOCAL_RADIUS = 2000; // Web Mercator metres (~2 km)
+                const LOCAL_RADIUS = 10_000; // Web Mercator metres (~10 km)
                 const translated = new Float32Array(chunk.count * 3);
                 let localMinY  = Infinity;
                 let globalMinY = Infinity;

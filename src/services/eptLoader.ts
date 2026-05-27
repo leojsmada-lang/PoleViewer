@@ -46,10 +46,15 @@ export interface PointCloudChunk {
 // LoadOptions controls how much data to fetch — important for keeping
 // memory and load time under control on large datasets.
 export interface LoadOptions {
-  maxPoints?: number;  // hard cap on total points loaded (default 500,000)
-  maxDepth?: number;   // octree depth limit — 0=root (coarse), 3=good overview
-  bounds?: [number, number, number, number, number, number]; // spatial filter (unused currently)
-  onProgress?: (loaded: number, total: number) => void; // progress callback for the UI
+  maxPoints?: number;    // hard cap on total points loaded (default 500,000)
+  maxDepth?: number;     // octree depth limit — 0=root (coarse), 3=good overview
+  minDepth?: number;     // skip tiles shallower than this depth (default 0)
+                         // Use minDepth=2 to skip the coarse whole-dataset root tiles
+                         // that would otherwise dominate the point budget.
+  centerX?: number;      // Web Mercator easting of the area of interest
+  centerY?: number;      // Web Mercator northing of the area of interest
+  radiusMeters?: number; // only load tiles whose bounding box intersects this circle
+  onProgress?: (loaded: number, total: number) => void;
 }
 
 // HierarchyNode represents one entry in the EPT hierarchy JSON.
@@ -66,7 +71,7 @@ export async function loadEptPointCloud(
   manifest: EptManifest,
   options: LoadOptions = {}
 ): Promise<PointCloudChunk> {
-  const { maxPoints = 500_000, maxDepth = 3, onProgress } = options;
+  const { maxPoints = 500_000, maxDepth = 3, minDepth = 0, centerX, centerY, radiusMeters, onProgress } = options;
 
   // Step 1: fetch the root hierarchy node.
   // The hierarchy tells us which tiles actually exist so we don't request
@@ -77,8 +82,12 @@ export async function loadEptPointCloud(
   const hierarchy: HierarchyNode = await hierRes.json();
 
   // Step 2: walk the hierarchy tree and collect node addresses to fetch.
+  // If centerX/centerY/radiusMeters are provided, only tiles whose bounding
+  // box overlaps that circle are collected (ignoring the rest of the dataset).
+  // minDepth skips coarse whole-dataset tiles that would eat the point budget.
   const nodesToLoad: Array<{ d: number; x: number; y: number; z: number }> = [];
-  collectNodes(hierarchy, 0, 0, 0, 0, maxDepth, nodesToLoad);
+  collectNodes(hierarchy, 0, 0, 0, 0, maxDepth, nodesToLoad, manifest.bounds, minDepth, centerX, centerY, radiusMeters);
+  console.log(`[eptLoader] ${nodesToLoad.length} nodes queued (depth ${minDepth}–${maxDepth}, radius ${radiusMeters ?? 'all'} m)`);
 
   // Step 3: fetch tiles in parallel batches of 4.
   // Promise.allSettled (unlike Promise.all) continues even if some tiles fail —
@@ -378,27 +387,46 @@ function collectNodes(
   y: number,
   z: number,
   maxDepth: number,
-  result: Array<{ d: number; x: number; y: number; z: number }>
+  result: Array<{ d: number; x: number; y: number; z: number }>,
+  datasetBounds: number[],
+  minDepth: number,
+  centerX?: number,
+  centerY?: number,
+  radiusMeters?: number,
 ): void {
   const key = `${d}-${x}-${y}-${z}`;
-  if (!(key in hierarchy)) return; // this node doesn't exist in the dataset — stop recursing
+  if (!(key in hierarchy)) return;
 
-  result.push({ d, x, y, z }); // this node exists, add it to the fetch list
-  if (d >= maxDepth) return;    // don't go deeper than the requested level
+  // Spatial filter: skip this entire subtree if its bounding box is farther from
+  // the centre than radiusMeters. Uses an AABB–circle distance check so we only
+  // need to compare the closest point on the box to the circle centre.
+  if (centerX !== undefined && centerY !== undefined && radiusMeters !== undefined) {
+    const nDiv = Math.pow(2, d);
+    const nodeMinX = datasetBounds[0] + x       * (datasetBounds[3] - datasetBounds[0]) / nDiv;
+    const nodeMaxX = datasetBounds[0] + (x + 1) * (datasetBounds[3] - datasetBounds[0]) / nDiv;
+    const nodeMinY = datasetBounds[1] + y       * (datasetBounds[4] - datasetBounds[1]) / nDiv;
+    const nodeMaxY = datasetBounds[1] + (y + 1) * (datasetBounds[4] - datasetBounds[1]) / nDiv;
+    const closestX = Math.max(nodeMinX, Math.min(centerX, nodeMaxX));
+    const closestY = Math.max(nodeMinY, Math.min(centerY, nodeMaxY));
+    const dist = Math.sqrt((closestX - centerX) ** 2 + (closestY - centerY) ** 2);
+    if (dist > radiusMeters) return;
+  }
 
-  // Each parent splits into 8 children (2 splits per axis: dx=0|1, dy=0|1, dz=0|1).
-  // Child address = (parent * 2) + 0 or 1 per axis.
+  // Only enqueue this node once we've reached the minimum requested depth.
+  // Lower-depth (coarser) nodes are still traversed so their children can be found.
+  if (d >= minDepth) {
+    result.push({ d, x, y, z });
+  }
+
+  if (d >= maxDepth) return;
+
   for (let dx = 0; dx < 2; dx++) {
     for (let dy = 0; dy < 2; dy++) {
       for (let dz = 0; dz < 2; dz++) {
         collectNodes(
           hierarchy,
-          d + 1,
-          x * 2 + dx,
-          y * 2 + dy,
-          z * 2 + dz,
-          maxDepth,
-          result
+          d + 1, x * 2 + dx, y * 2 + dy, z * 2 + dz,
+          maxDepth, result, datasetBounds, minDepth, centerX, centerY, radiusMeters,
         );
       }
     }
