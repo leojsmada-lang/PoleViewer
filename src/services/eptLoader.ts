@@ -166,24 +166,36 @@ let lazPerfModulePromise: Promise<any> | null = null;
 
 function getLazPerfModule(): Promise<any> {
   if (!lazPerfModulePromise) {
-    // locateFile() is not reliable here because webpack may resolve the .wasm
-    // path at build time before our override runs. Instead we fetch the WASM
-    // binary ourselves from the known public URL and pass it via `wasmBinary`.
-    // Emscripten skips its own network fetch entirely when wasmBinary is provided.
+    // We fetch the WASM binary ourselves and pass it via `wasmBinary` so that
+    // Emscripten skips its own network fetch (which would resolve to the wrong URL).
+    //
+    // The file is served as laz-perf.wasm.txt, not laz-perf.wasm.
+    // Reason: Amplify's default SPA redirect rule intercepts any request whose
+    // extension is not in its allowlist (css|gif|ico|jpg|js|png|txt|svg|…) and
+    // returns index.html with status 200 instead. ".wasm" is not on the list,
+    // so requests for /laz-perf.wasm would silently return HTML.
+    // ".txt" IS on the list, so /laz-perf.wasm.txt is served as raw bytes.
     const publicUrl = (process.env.PUBLIC_URL ?? '').replace(/\/$/, '');
-    const wasmUrl = `${publicUrl}/laz-perf.wasm`;
+    const wasmUrl = `${publicUrl}/laz-perf.wasm.txt`;
 
     lazPerfModulePromise = Promise.all([
       import('laz-perf'),
-      fetch(wasmUrl).then((r) => {
+      fetch(wasmUrl).then(async (r) => {
         if (!r.ok) throw new Error(`laz-perf WASM fetch failed: ${r.status} ${wasmUrl}`);
-        return r.arrayBuffer();
+        const buf = await r.arrayBuffer();
+        // Guard: WASM binaries start with the magic bytes \0asm (00 61 73 6d).
+        // If we receive HTML instead (3c 21 64 6f = "<!do") the module will
+        // silently abort — catch it early with a clear message.
+        const magic = new Uint8Array(buf, 0, 4);
+        if (magic[0] !== 0x00 || magic[1] !== 0x61 || magic[2] !== 0x73 || magic[3] !== 0x6d) {
+          throw new Error(`laz-perf WASM at ${wasmUrl} is not a valid binary (got HTML?)`);
+        }
+        return buf;
       }),
     ])
       .then(([m, wasmBinary]: [any, ArrayBuffer]) => {
         const factory = m.create ?? m.createLazPerf ?? m.default;
         if (typeof factory !== 'function') throw new Error('laz-perf: no factory export found');
-        // Pass the pre-fetched binary — Emscripten uses it directly without re-fetching.
         return factory({ wasmBinary });
       })
       .catch((err) => {
