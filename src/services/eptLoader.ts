@@ -228,7 +228,8 @@ function parseLasHeader(buffer: ArrayBuffer): PointCloudChunk | null {
   // Byte 107: number of point records (legacy 32-bit field; sufficient for most tiles)
   const pointCount    = view.getUint32(107, true);
   // Byte 104: point data format ID (0=basic XYZ, 1=XYZ+time, 6=LAS 1.4 extended, etc.)
-  const pointFormat   = view.getUint8(104);  // read but not used — structure is the same for our purposes
+  // Not used directly — point record structure is the same for our XYZ+intensity read regardless of format.
+  void view.getUint8(104);
   // Byte 105: size in bytes of each point record
   const pointSize     = view.getUint16(105, true);
 
