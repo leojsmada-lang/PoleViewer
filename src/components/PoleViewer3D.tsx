@@ -300,11 +300,11 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 setLidarStage('Streaming point cloud tiles...');
                 const chunk = await loadEptPointCloud(dataset.eptUrl, manifest, {
                     maxPoints: 400_000,
-                    maxDepth: 3,
-                    minDepth: 2,
+                    maxDepth: 4,
+                    minDepth: 3,
                     centerX,
                     centerY,
-                    radiusMeters: 50_000,
+                    radiusMeters: 15_000,
                     onProgress: (loaded, total) => {
                         if (isMounted) setLidarProgress(25 + Math.floor((loaded / total) * 65));
                     },

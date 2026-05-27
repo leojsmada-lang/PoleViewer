@@ -63,6 +63,68 @@ export interface LoadOptions {
 type HierarchyNode = { [key: string]: number | HierarchyNode };
 
 /**
+ * Expands EPT sub-hierarchy files in-place.
+ *
+ * Large EPT datasets split their hierarchy JSON across multiple files.
+ * A node with value -1 in the hierarchy means "fetch ept-hierarchy/{key}.json
+ * to get the children of this subtree." We fetch those files iteratively
+ * (spatially filtered to avoid pulling in the whole world) until no more
+ * -1 entries remain within the desired depth/radius.
+ */
+async function expandSubHierarchies(
+  eptUrl: string,
+  hierarchy: HierarchyNode,
+  bounds: number[],
+  maxDepth: number,
+  centerX?: number,
+  centerY?: number,
+  radiusMeters?: number,
+): Promise<void> {
+  const base = eptUrl.replace('/ept.json', '');
+
+  // Iterate until there are no more -1 nodes within range (handles chained sub-hierarchies).
+  for (let pass = 0; pass < 10; pass++) {
+    const toFetch: string[] = [];
+
+    for (const [key, val] of Object.entries(hierarchy)) {
+      if (val !== -1) continue;
+      const parts = key.split('-');
+      const d = Number(parts[0]), x = Number(parts[1]), y = Number(parts[2]);
+      if (d >= maxDepth) continue; // no need to go deeper than requested
+
+      // Spatial filter — same AABB-circle check as collectNodes
+      if (centerX !== undefined && centerY !== undefined && radiusMeters !== undefined) {
+        const nDiv = 2 ** d;
+        const xSpan = (bounds[3] - bounds[0]) / nDiv;
+        const ySpan = (bounds[4] - bounds[1]) / nDiv;
+        const nx0 = bounds[0] + x * xSpan, nx1 = nx0 + xSpan;
+        const ny0 = bounds[1] + y * ySpan, ny1 = ny0 + ySpan;
+        const cx = Math.max(nx0, Math.min(centerX, nx1));
+        const cy = Math.max(ny0, Math.min(centerY, ny1));
+        const dist = Math.sqrt((cx - centerX) ** 2 + (cy - centerY) ** 2);
+        if (dist > radiusMeters) continue;
+      }
+      toFetch.push(key);
+    }
+
+    if (toFetch.length === 0) break;
+
+    await Promise.all(toFetch.map(async (key) => {
+      try {
+        const res = await fetch(`${base}/ept-hierarchy/${key}.json`);
+        // Mark as resolved regardless of success so we don't retry endlessly
+        (hierarchy as Record<string, number>)[key] = 0;
+        if (!res.ok) return;
+        const sub = await res.json() as HierarchyNode;
+        Object.assign(hierarchy, sub);
+      } catch {
+        (hierarchy as Record<string, number>)[key] = 0;
+      }
+    }));
+  }
+}
+
+/**
  * Main entry point: loads a point cloud from an EPT dataset.
  * Orchestrates hierarchy fetch → node collection → tile streaming → merge.
  */
@@ -74,17 +136,17 @@ export async function loadEptPointCloud(
   const { maxPoints = 500_000, maxDepth = 3, minDepth = 0, centerX, centerY, radiusMeters, onProgress } = options;
 
   // Step 1: fetch the root hierarchy node.
-  // The hierarchy tells us which tiles actually exist so we don't request
-  // tiles that would 404. The root node (0-0-0-0) covers the whole dataset.
   const hierUrl = buildHierarchyUrl(eptUrl, 0, 0, 0, 0);
   const hierRes = await fetch(hierUrl);
   if (!hierRes.ok) throw new Error(`Hierarchy fetch failed: ${hierUrl}`);
   const hierarchy: HierarchyNode = await hierRes.json();
 
+  // Step 1b: large EPT datasets split their hierarchy into sub-files.
+  // Any node with value -1 means "sub-hierarchy exists at ept-hierarchy/{key}.json".
+  // Fetch those sub-files (spatially filtered) so we can recurse into deeper tiles.
+  await expandSubHierarchies(eptUrl, hierarchy, manifest.bounds, maxDepth, centerX, centerY, radiusMeters);
+
   // Step 2: walk the hierarchy tree and collect node addresses to fetch.
-  // If centerX/centerY/radiusMeters are provided, only tiles whose bounding
-  // box overlaps that circle are collected (ignoring the rest of the dataset).
-  // minDepth skips coarse whole-dataset tiles that would eat the point budget.
   const nodesToLoad: Array<{ d: number; x: number; y: number; z: number }> = [];
   collectNodes(hierarchy, 0, 0, 0, 0, maxDepth, nodesToLoad, manifest.bounds, minDepth, centerX, centerY, radiusMeters);
   console.log(`[eptLoader] ${nodesToLoad.length} nodes queued (depth ${minDepth}–${maxDepth}, radius ${radiusMeters ?? 'all'} m)`);
