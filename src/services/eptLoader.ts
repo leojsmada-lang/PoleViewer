@@ -4,8 +4,11 @@
 //   The USGS 3DEP datasets use LASzip (LAZ) compression — a lossless codec
 //   that reduces tile file sizes by ~5–10x. Plain LAS would be uncompressed.
 //   We use the `laz-perf` WASM library for in-browser LAZ decompression.
-//   If laz-perf fails to load for any reason, we fall back to a plain LAS
-//   parser which can still handle any uncompressed tiles.
+//   laz-perf@0.0.7 is an Emscripten module: it exports a `create` factory
+//   that must be awaited to initialize the WASM runtime. The resulting module
+//   provides LASZip (point-by-point decompressor) and ChunkDecoder classes.
+//   If laz-perf fails to load, we fall back to a plain LAS parser which
+//   handles any uncompressed tiles.
 //
 // HOW EPT STREAMING WORKS:
 //   1. Fetch the root hierarchy node (ept-hierarchy/0-0-0-0.json).
@@ -155,50 +158,115 @@ async function loadTile(
 // LAZ decompression
 // ---------------------------------------------------------------------------
 
+// laz-perf@0.0.7 exports a factory function (`create`) that initializes
+// the Emscripten WASM runtime and returns a module with LASZip and ChunkDecoder.
+// Creating the WASM instance is expensive, so we cache the Promise here and
+// reuse it for every tile rather than re-initializing once per file.
+let lazPerfModulePromise: Promise<any> | null = null;
+
+function getLazPerfModule(): Promise<any> {
+  if (!lazPerfModulePromise) {
+    lazPerfModulePromise = import('laz-perf')
+      .then((m: any) => {
+        // The package exports { create, createLazPerf, LazPerf }.
+        // `create` is the canonical factory; fall back to others just in case.
+        const factory = m.create ?? m.createLazPerf ?? m.default;
+        if (typeof factory !== 'function') throw new Error('laz-perf: no factory export found');
+        return factory();
+      })
+      .catch((err) => {
+        lazPerfModulePromise = null; // allow retry on transient errors
+        throw err;
+      });
+  }
+  return lazPerfModulePromise;
+}
+
 /**
- * Decodes a LAZ (or plain LAS) tile buffer using laz-perf WASM.
- * laz-perf is loaded via a dynamic import so the app still starts up if
- * the WASM file fails to load — it just falls back to the plain LAS parser,
- * which works for any uncompressed tiles.
+ * Decodes a LAZ (LASzip-compressed) tile buffer using the laz-perf WASM module.
+ * Falls back to the plain LAS parser if laz-perf is unavailable or the tile
+ * is already uncompressed.
+ *
+ * HOW laz-perf WORKS AT THE WASM LEVEL:
+ *   laz-perf exposes a C++ LASZip class via Emscripten bindings.
+ *   All data exchange goes through the WASM linear memory (HEAP8, HEAP32, etc.).
+ *   We must:
+ *     1. _malloc space for the whole LAZ file, copy it in via HEAPU8.set()
+ *     2. Call laszip.open(ptr, length) — parses the LAS header + chunk table
+ *     3. Loop: laszip.getPoint(pointPtr) decompresses one point record at a time
+ *     4. Read raw integers from HEAP32/HEAPU16 at the point pointer
+ *     5. _free both allocations and call laszip.delete() to avoid WASM heap leaks
+ *   Scale and offset come from the LAS header (readable directly from the
+ *   ArrayBuffer with DataView — same layout in both compressed and uncompressed files).
  */
 async function decodeLaz(buffer: ArrayBuffer): Promise<PointCloudChunk | null> {
   try {
-    // Dynamic import — laz-perf's WASM module is loaded on first use, not at
-    // startup. `m.default || m` handles both ESM default export and CJS module forms.
-    const LazPerf = await import('laz-perf').then((m: any) => m.default || m);
+    const module = await getLazPerfModule();
 
-    const las = new LazPerf.LASFile(buffer);
-    const header = las.getHeader();
-    const count: number = header.pointsCount;
+    // Read the LAS header with DataView — identical layout in LAZ and plain LAS.
+    const view = new DataView(buffer);
+    const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+    if (sig !== 'LASF') return null;
+
+    // Byte 107: legacy 32-bit point count (sufficient for all USGS EPT tiles)
+    const count = view.getUint32(107, true);
     if (count === 0) return null;
 
-    // getReader() + read(count) decompresses all point records into typed arrays
-    const reader = las.getReader();
-    const data = reader.read(count);
+    // Bytes 131–178: scale and offset for converting stored integers → real coords
+    const xScale  = view.getFloat64(131, true);
+    const yScale  = view.getFloat64(139, true);
+    const zScale  = view.getFloat64(147, true);
+    const xOffset = view.getFloat64(155, true);
+    const yOffset = view.getFloat64(163, true);
+    const zOffset = view.getFloat64(171, true);
+
+    // Copy the full LAZ file into the WASM heap so LASZip can read it.
+    // HEAPU8 is a Uint8Array view over the entire WASM linear memory.
+    const data   = new Uint8Array(buffer);
+    const filePtr = module._malloc(data.length);
+    module.HEAPU8.set(data, filePtr);
+
+    // Initialize the LASZip decompressor with the file data.
+    const laszip = new module.LASZip();
+    laszip.open(filePtr, data.length);
+
+    // Allocate a scratch buffer for one decompressed point record.
+    // getPointLength() returns the number of bytes in one point record.
+    const pointSize = laszip.getPointLength();
+    const pointPtr  = module._malloc(pointSize);
 
     const positions   = new Float32Array(count * 3);
     const intensities = new Float32Array(count);
 
-    // laz-perf stores coordinates as raw integers — apply scale and offset
-    // to convert to real-world units (same math as the plain LAS parser below)
-    const xScale = header.scale[0];
-    const yScale = header.scale[1];
-    const zScale = header.scale[2];
-    const xOffset = header.offset[0];
-    const yOffset = header.offset[1];
-    const zOffset = header.offset[2];
-
     for (let i = 0; i < count; i++) {
-      positions[i * 3 + 0] = data.position[i * 3 + 0] * xScale + xOffset;
-      positions[i * 3 + 1] = data.position[i * 3 + 1] * yScale + yOffset;
-      positions[i * 3 + 2] = data.position[i * 3 + 2] * zScale + zOffset;
-      // intensity?.[i] uses optional chaining — some tile formats omit intensity
-      intensities[i] = (data.intensity?.[i] ?? 0) / 65535;
+      // Decompress the next point record into WASM memory at pointPtr.
+      laszip.getPoint(pointPtr);
+
+      // X, Y, Z are signed 32-bit integers at byte offsets 0, 4, 8 in the record.
+      // HEAP32 is indexed in 4-byte units — shift right by 2 to convert byte → int32 index.
+      const xi = module.HEAP32[(pointPtr >> 2) + 0];
+      const yi = module.HEAP32[(pointPtr >> 2) + 1];
+      const zi = module.HEAP32[(pointPtr >> 2) + 2];
+
+      // Intensity is an unsigned 16-bit value at byte offset 12.
+      // HEAPU16 is indexed in 2-byte units — (pointPtr + 12) / 2 = (pointPtr >> 1) + 6.
+      const inten = module.HEAPU16[(pointPtr >> 1) + 6];
+
+      positions[i * 3 + 0] = xi * xScale + xOffset;
+      positions[i * 3 + 1] = yi * yScale + yOffset;
+      positions[i * 3 + 2] = zi * zScale + zOffset;
+      intensities[i] = inten / 65535;
     }
+
+    // Free WASM memory — Emscripten does NOT garbage-collect these automatically.
+    laszip.delete();
+    module._free(pointPtr);
+    module._free(filePtr);
 
     return { positions, intensities, count };
   } catch (err) {
-    // laz-perf unavailable or tile is not LAZ — try the plain LAS parser
+    // laz-perf failed or unavailable — fall back to the plain LAS parser,
+    // which handles uncompressed tiles correctly.
     console.warn('[eptLoader] laz-perf decode failed, trying plain LAS parser', err);
     return parseLasHeader(buffer);
   }
