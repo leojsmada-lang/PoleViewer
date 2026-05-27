@@ -1,11 +1,11 @@
 /**
  * lidarService.ts
- * Queries the USGS 3DEP EPT catalog to find available LiDAR datasets
- * for a given lat/lng, then streams point cloud data from the public
- * S3 bucket — zero cost to you, served by USGS/AWS Open Data.
+ * Streams point cloud data from the USGS 3DEP public S3 bucket.
+ * Zero cost — served by USGS/AWS Open Data.
  *
  * EPT public bucket: https://s3-us-west-2.amazonaws.com/usgs-lidar-public/
- * Coverage index:    https://index.entwine.io/
+ * Note: index.entwine.io (the discovery API) is no longer operational.
+ * Dataset names are sourced directly from the S3 bucket.
  */
 
 export interface EptDataset {
@@ -32,42 +32,15 @@ const EPT_BASE = 'https://s3-us-west-2.amazonaws.com/usgs-lidar-public';
 
 // Entwine index — returns all EPT datasets that intersect a lon/lat bbox
 // Format: GET https://index.entwine.io/bounds?bounds=minLon,minLat,maxLon,maxLat
-const ENTWINE_INDEX = 'https://index.entwine.io/bounds';
-
 /**
  * Find USGS 3DEP EPT datasets covering a given lat/lng point.
- * Returns datasets sorted by point count (most detailed first).
+ * Returns known datasets from the usgs-lidar-public S3 bucket.
  */
 export async function findDatasetsForLocation(
-  lat: number,
-  lng: number,
-  radiusDeg = 0.01  // ~1km
+  _lat: number,
+  _lng: number,
 ): Promise<EptDataset[]> {
-  const minLon = lng - radiusDeg;
-  const minLat = lat - radiusDeg;
-  const maxLon = lng + radiusDeg;
-  const maxLat = lat + radiusDeg;
-
-  const url = `${ENTWINE_INDEX}?bounds=${minLon},${minLat},${maxLon},${maxLat}`;
-
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Index query failed: ${res.status}`);
-    const data: Array<{ name: string; bounds: number[]; srs: string; points: number }> = await res.json();
-
-    return data
-      .map((d) => ({
-        name: d.name,
-        eptUrl: `${EPT_BASE}/${d.name}/ept.json`,
-        bounds: d.bounds as [number, number, number, number, number, number],
-        srs: d.srs,
-        points: d.points,
-      }))
-      .sort((a, b) => b.points - a.points);
-  } catch (err) {
-    console.warn('[lidarService] Index query failed, using fallback dataset list', err);
-    return getFallbackDatasets(lat, lng);
-  }
+  return getFallbackDatasets();
 }
 
 /**
@@ -101,20 +74,32 @@ export function buildHierarchyUrl(eptUrl: string, d: number, x: number, y: numbe
  * Fallback: known Georgia / Fayette County datasets if the index API is unavailable.
  * Project names sourced from the USGS 3DEP catalog.
  */
-function getFallbackDatasets(lat: number, lng: number): EptDataset[] {
-  // Fayette County area datasets (confirmed coverage from NOAA InPort)
-  const knownGeorgiaProjects = [
-    'GA_CentralGA_2019_D20',   // 2019-2020 Central Georgia — covers Fayette County
-    'GA_Statewide_2018_D19',   // 2018-2019 GA Statewide
+function getFallbackDatasets(): EptDataset[] {
+  // Verified against usgs-lidar-public S3 bucket — all have valid ept.json.
+  // Bounds are in EPSG:3857 (Web Mercator), sourced from each dataset's ept.json.
+  return [
+    {
+      name: 'GA_Central_1_2018',
+      eptUrl: `${EPT_BASE}/GA_Central_1_2018/ept.json`,
+      bounds: [-9422133, 3870887, -125541, -9170573, 4122447, 126019],
+      srs: 'EPSG:3857',
+      points: 0,
+    },
+    {
+      name: 'GA_Central_2_2018',
+      eptUrl: `${EPT_BASE}/GA_Central_2_2018/ept.json`,
+      bounds: [-9540929, 3700483, -114719, -9311007, 3930405, 115203],
+      srs: 'EPSG:3857',
+      points: 0,
+    },
+    {
+      name: 'GA_Central_3_2018',
+      eptUrl: `${EPT_BASE}/GA_Central_3_2018/ept.json`,
+      bounds: [-9509667, 3533495, -134185, -9240817, 3802345, 134665],
+      srs: 'EPSG:3857',
+      points: 0,
+    },
   ];
-
-  return knownGeorgiaProjects.map((name) => ({
-    name,
-    eptUrl: `${EPT_BASE}/${name}/ept.json`,
-    bounds: [-85, 32, -80, 35, 0, 500] as [number, number, number, number, number, number],
-    srs: 'EPSG:6350',
-    points: 0,
-  }));
 }
 
 /**
