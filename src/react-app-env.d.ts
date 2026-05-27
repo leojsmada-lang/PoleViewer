@@ -8,6 +8,9 @@
 // This tells TypeScript that importing a .css file is valid and gives back an
 // object mapping class names to strings (used when CSS Modules are enabled).
 // Without this, TypeScript would error on lines like: import styles from './App.css'
+// laz-perf ships no TypeScript types — this tells the compiler to treat it as `any`.
+declare module 'laz-perf';
+
 declare module '*.css' {
   const content: { [className: string]: string };
   export default content;

@@ -1,5 +1,12 @@
 // eptLoader.ts — downloads and decodes EPT point cloud tiles from USGS S3.
 //
+// LAZ vs LAS:
+//   The USGS 3DEP datasets use LASzip (LAZ) compression — a lossless codec
+//   that reduces tile file sizes by ~5–10x. Plain LAS would be uncompressed.
+//   We use the `laz-perf` WASM library for in-browser LAZ decompression.
+//   If laz-perf fails to load for any reason, we fall back to a plain LAS
+//   parser which can still handle any uncompressed tiles.
+//
 // HOW EPT STREAMING WORKS:
 //   1. Fetch the root hierarchy node (ept-hierarchy/0-0-0-0.json).
 //      This JSON lists all the octree nodes that exist in the dataset.
@@ -138,9 +145,62 @@ async function loadTile(
     // arrayBuffer() returns the raw binary data of the response body.
     // We pass it directly to the LAS parser rather than converting to text.
     const buffer = await res.arrayBuffer();
-    return parseLasHeader(buffer);
+    return decodeLaz(buffer);
   } catch {
     return null; // network error — skip this tile
+  }
+}
+
+// ---------------------------------------------------------------------------
+// LAZ decompression
+// ---------------------------------------------------------------------------
+
+/**
+ * Decodes a LAZ (or plain LAS) tile buffer using laz-perf WASM.
+ * laz-perf is loaded via a dynamic import so the app still starts up if
+ * the WASM file fails to load — it just falls back to the plain LAS parser,
+ * which works for any uncompressed tiles.
+ */
+async function decodeLaz(buffer: ArrayBuffer): Promise<PointCloudChunk | null> {
+  try {
+    // Dynamic import — laz-perf's WASM module is loaded on first use, not at
+    // startup. `m.default || m` handles both ESM default export and CJS module forms.
+    const LazPerf = await import('laz-perf').then((m: any) => m.default || m);
+
+    const las = new LazPerf.LASFile(buffer);
+    const header = las.getHeader();
+    const count: number = header.pointsCount;
+    if (count === 0) return null;
+
+    // getReader() + read(count) decompresses all point records into typed arrays
+    const reader = las.getReader();
+    const data = reader.read(count);
+
+    const positions   = new Float32Array(count * 3);
+    const intensities = new Float32Array(count);
+
+    // laz-perf stores coordinates as raw integers — apply scale and offset
+    // to convert to real-world units (same math as the plain LAS parser below)
+    const xScale = header.scale[0];
+    const yScale = header.scale[1];
+    const zScale = header.scale[2];
+    const xOffset = header.offset[0];
+    const yOffset = header.offset[1];
+    const zOffset = header.offset[2];
+
+    for (let i = 0; i < count; i++) {
+      positions[i * 3 + 0] = data.position[i * 3 + 0] * xScale + xOffset;
+      positions[i * 3 + 1] = data.position[i * 3 + 1] * yScale + yOffset;
+      positions[i * 3 + 2] = data.position[i * 3 + 2] * zScale + zOffset;
+      // intensity?.[i] uses optional chaining — some tile formats omit intensity
+      intensities[i] = (data.intensity?.[i] ?? 0) / 65535;
+    }
+
+    return { positions, intensities, count };
+  } catch (err) {
+    // laz-perf unavailable or tile is not LAZ — try the plain LAS parser
+    console.warn('[eptLoader] laz-perf decode failed, trying plain LAS parser', err);
+    return parseLasHeader(buffer);
   }
 }
 
