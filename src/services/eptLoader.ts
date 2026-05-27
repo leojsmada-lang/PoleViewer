@@ -172,7 +172,18 @@ function getLazPerfModule(): Promise<any> {
         // `create` is the canonical factory; fall back to others just in case.
         const factory = m.create ?? m.createLazPerf ?? m.default;
         if (typeof factory !== 'function') throw new Error('laz-perf: no factory export found');
-        return factory();
+
+        // CRA's webpack does not automatically bundle .wasm files from node_modules,
+        // so the Emscripten runtime would try to fetch laz-perf.wasm from the wrong
+        // path and receive a 404 HTML page instead of the binary.
+        // Fix: we copied laz-perf.wasm into public/ so it is served as a static asset,
+        // and we override locateFile() to tell the runtime where to find it.
+        // process.env.PUBLIC_URL is set by CRA to the app's base path (e.g. "" or "/app").
+        const publicUrl = (process.env.PUBLIC_URL ?? '').replace(/\/$/, '');
+        return factory({
+          locateFile: (path: string) =>
+            path.endsWith('.wasm') ? `${publicUrl}/laz-perf.wasm` : path,
+        });
       })
       .catch((err) => {
         lazPerfModulePromise = null; // allow retry on transient errors
