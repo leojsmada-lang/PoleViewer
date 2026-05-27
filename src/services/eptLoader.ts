@@ -2,11 +2,6 @@
  * eptLoader.ts
  * Streams EPT point cloud tiles from USGS S3 and decodes them into
  * Float32Array buffers that Three.js BufferGeometry can consume directly.
- *
- * EPT tiles are LASzip (.laz) compressed — we use the `laz-perf` WASM
- * library for in-browser decompression (no server needed).
- *
- * Install:  npm install laz-perf
  */
 
 import { EptManifest, buildEptNodeUrl, buildHierarchyUrl } from './lidarService';
@@ -110,48 +105,6 @@ async function loadTile(
     return parseLasHeader(buffer);
   } catch {
     return null;
-  }
-}
-
-/**
- * Decode a LAZ buffer using laz-perf WASM.
- * Falls back to a simple LAS parser if laz-perf is unavailable
- * (laz-perf must be installed separately: npm install laz-perf).
- */
-async function decodeLaz(buffer: ArrayBuffer, manifest: EptManifest): Promise<PointCloudChunk | null> {
-  try {
-    // Dynamic import so the app works without laz-perf (graceful degradation)
-    const LazPerf = await import('laz-perf').then((m) => m.default || m);
-
-    const las = new LazPerf.LASFile(buffer);
-    const header = las.getHeader();
-    const count = header.pointsCount;
-    if (count === 0) return null;
-
-    const reader = las.getReader();
-    const data = reader.read(count);
-
-    const positions = new Float32Array(count * 3);
-    const intensities = new Float32Array(count);
-
-    const xScale = header.scale[0];
-    const yScale = header.scale[1];
-    const zScale = header.scale[2];
-    const xOffset = header.offset[0];
-    const yOffset = header.offset[1];
-    const zOffset = header.offset[2];
-
-    for (let i = 0; i < count; i++) {
-      positions[i * 3 + 0] = data.position[i * 3 + 0] * xScale + xOffset;
-      positions[i * 3 + 1] = data.position[i * 3 + 1] * yScale + yOffset;
-      positions[i * 3 + 2] = data.position[i * 3 + 2] * zScale + zOffset;
-      intensities[i] = (data.intensity?.[i] ?? 0) / 65535;
-    }
-
-    return { positions, intensities, count };
-  } catch (err) {
-    console.warn('[eptLoader] laz-perf not available, using fallback parser', err);
-    return parseLasHeader(buffer);
   }
 }
 
