@@ -1,32 +1,55 @@
-/**
- * eptLoader.ts
- * Streams EPT point cloud tiles from USGS S3 and decodes them into
- * Float32Array buffers that Three.js BufferGeometry can consume directly.
- */
+// eptLoader.ts — downloads and decodes EPT point cloud tiles from USGS S3.
+//
+// HOW EPT STREAMING WORKS:
+//   1. Fetch the root hierarchy node (ept-hierarchy/0-0-0-0.json).
+//      This JSON lists all the octree nodes that exist in the dataset.
+//   2. Walk the hierarchy tree up to a chosen depth limit.
+//      Depth 0 = one tile (whole dataset, very coarse).
+//      Depth 3 = up to 512 tiles (fine detail, manageable size).
+//   3. Fetch each tile file (ept-data/D-X-Y-Z.laz) in parallel batches.
+//   4. Parse each tile's binary LAS data into Float32Arrays of XYZ positions.
+//   5. Merge all tiles into a single array that Three.js can render.
+//
+// LAS FILE FORMAT (brief):
+//   LAS is a binary format for point cloud data, standardized by ASPRS.
+//   The file starts with a fixed header block (bytes 0–375) that contains:
+//     - "LASF" signature (4 bytes) — used to verify the file is valid
+//     - Byte offsets and counts for the point records
+//     - Scale and offset values needed to convert stored integers to real coords
+//   After the header, point records are stored sequentially. Each record
+//   contains the X, Y, Z position as 32-bit integers, plus intensity.
+//   Real coordinate = (stored integer × scale) + offset
+//   This integer-plus-scale encoding saves space while preserving precision.
 
 import { EptManifest, buildEptNodeUrl, buildHierarchyUrl } from './lidarService';
 
+// PointCloudChunk is the result of loading one or more EPT tiles.
+// positions holds all XYZ coordinates as a flat array: [x0,y0,z0, x1,y1,z1, ...]
+// A flat Float32Array is used (instead of an array of {x,y,z} objects) because
+// Three.js BufferGeometry expects data in exactly this interleaved format.
 export interface PointCloudChunk {
-  positions: Float32Array;   // Flat [x,y,z, x,y,z, ...] in dataset units
-  intensities?: Float32Array; // 0–1 normalized intensity per point
-  count: number;
+  positions: Float32Array;    // flat XYZ array, length = count * 3
+  intensities?: Float32Array; // 0–1 normalized intensity per point (optional)
+  count: number;              // number of points
 }
 
+// LoadOptions controls how much data to fetch — important for keeping
+// memory and load time under control on large datasets.
 export interface LoadOptions {
-  /** Max points to load total — keeps memory bounded */
-  maxPoints?: number;
-  /** Octree depth limit — 0=root (coarse), higher=denser. 2–3 good for overview */
-  maxDepth?: number;
-  /** Bounding box filter in dataset CRS [minX,minY,minZ,maxX,maxY,maxZ] */
-  bounds?: [number, number, number, number, number, number];
-  onProgress?: (loaded: number, total: number) => void;
+  maxPoints?: number;  // hard cap on total points loaded (default 500,000)
+  maxDepth?: number;   // octree depth limit — 0=root (coarse), 3=good overview
+  bounds?: [number, number, number, number, number, number]; // spatial filter (unused currently)
+  onProgress?: (loaded: number, total: number) => void; // progress callback for the UI
 }
 
+// HierarchyNode represents one entry in the EPT hierarchy JSON.
+// Keys are node addresses like "1-0-0-0", values are point counts
+// or nested objects for sub-hierarchies.
 type HierarchyNode = { [key: string]: number | HierarchyNode };
 
 /**
- * Main entry: load a point cloud from an EPT dataset.
- * Returns a merged Float32Array of XYZ positions (dataset native units).
+ * Main entry point: loads a point cloud from an EPT dataset.
+ * Orchestrates hierarchy fetch → node collection → tile streaming → merge.
  */
 export async function loadEptPointCloud(
   eptUrl: string,
@@ -35,22 +58,26 @@ export async function loadEptPointCloud(
 ): Promise<PointCloudChunk> {
   const { maxPoints = 500_000, maxDepth = 3, onProgress } = options;
 
-  // 1. Fetch the root hierarchy node list
+  // Step 1: fetch the root hierarchy node.
+  // The hierarchy tells us which tiles actually exist so we don't request
+  // tiles that would 404. The root node (0-0-0-0) covers the whole dataset.
   const hierUrl = buildHierarchyUrl(eptUrl, 0, 0, 0, 0);
   const hierRes = await fetch(hierUrl);
   if (!hierRes.ok) throw new Error(`Hierarchy fetch failed: ${hierUrl}`);
   const hierarchy: HierarchyNode = await hierRes.json();
 
-  // 2. Collect which nodes to load based on depth limit
+  // Step 2: walk the hierarchy tree and collect node addresses to fetch.
   const nodesToLoad: Array<{ d: number; x: number; y: number; z: number }> = [];
   collectNodes(hierarchy, 0, 0, 0, 0, maxDepth, nodesToLoad);
 
-  // 3. Load each node tile in parallel (batched)
+  // Step 3: fetch tiles in parallel batches of 4.
+  // Promise.allSettled (unlike Promise.all) continues even if some tiles fail —
+  // a missing or corrupt tile should not abort the whole load.
   const allPositions: Float32Array[] = [];
   const allIntensities: Float32Array[] = [];
   let totalLoaded = 0;
 
-  const BATCH = 4; // concurrent fetches
+  const BATCH = 4; // number of concurrent tile fetches
   for (let i = 0; i < nodesToLoad.length; i += BATCH) {
     const batch = nodesToLoad.slice(i, i + BATCH);
     const results = await Promise.allSettled(
@@ -63,14 +90,18 @@ export async function loadEptPointCloud(
         if (result.value.intensities) allIntensities.push(result.value.intensities);
         totalLoaded += result.value.count;
       }
+      // 'rejected' results (network errors, bad tiles) are silently skipped
     }
 
+    // Report progress after each batch so the UI progress bar moves smoothly.
+    // The ?. (optional chaining) safely calls onProgress only if it was provided.
     onProgress?.(Math.min(totalLoaded, maxPoints), maxPoints);
 
-    if (totalLoaded >= maxPoints) break;
+    if (totalLoaded >= maxPoints) break; // stop early once we have enough points
   }
 
-  // 4. Merge into a single buffer
+  // Step 4: merge all per-tile Float32Arrays into a single flat buffer.
+  // Three.js needs one contiguous array, not an array of arrays.
   const merged = mergeFloat32Arrays(allPositions, maxPoints * 3);
   const mergedIntensities =
     allIntensities.length > 0 ? mergeFloat32Arrays(allIntensities, maxPoints) : undefined;
@@ -78,14 +109,17 @@ export async function loadEptPointCloud(
   return {
     positions: merged,
     intensities: mergedIntensities,
-    count: merged.length / 3,
+    count: merged.length / 3, // each point uses 3 floats (X, Y, Z)
   };
 }
 
 // ---------------------------------------------------------------------------
-// Tile loading — fetches a single .laz file and decodes it
+// Tile loading
 // ---------------------------------------------------------------------------
 
+// loadTile fetches a single .laz tile file and decodes it.
+// Returns null if the tile doesn't exist or fails to parse — the caller
+// uses Promise.allSettled so a null result is harmlessly skipped.
 async function loadTile(
   eptUrl: string,
   manifest: EptManifest,
@@ -98,46 +132,73 @@ async function loadTile(
 
   try {
     const res = await fetch(url);
-    if (!res.status || res.status === 404) return null;
+    if (!res.status || res.status === 404) return null; // tile simply doesn't exist
     if (!res.ok) return null;
 
+    // arrayBuffer() returns the raw binary data of the response body.
+    // We pass it directly to the LAS parser rather than converting to text.
     const buffer = await res.arrayBuffer();
     return parseLasHeader(buffer);
   } catch {
-    return null;
+    return null; // network error — skip this tile
   }
 }
 
+// ---------------------------------------------------------------------------
+// LAS binary parser
+// ---------------------------------------------------------------------------
+
 /**
- * Minimal LAS 1.x parser (no compression) — fallback if laz-perf is absent.
- * Reads point format 0/1/6 from raw binary. Works on uncompressed EPT data
- * if the server returns plain LAS instead of LAZ.
+ * Parses a LAS 1.x binary file and extracts XYZ positions and intensity.
+ *
+ * All byte offsets below come from the LAS 1.2/1.4 specification.
+ * DataView is the browser API for reading typed values from raw binary at
+ * specific byte positions. `true` as the second argument means little-endian
+ * (the byte order used by LAS files and most modern hardware).
  */
 function parseLasHeader(buffer: ArrayBuffer): PointCloudChunk | null {
   const view = new DataView(buffer);
+
+  // Bytes 0–3: file signature. Must be "LASF" or the file is not a valid LAS file.
   const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
   if (sig !== 'LASF') return null;
 
+  // Byte 96:  offset (in bytes) from the start of the file to the first point record
   const offsetToData = view.getUint32(96, true);
-  const pointCount = view.getUint32(107, true);
-  const pointFormat = view.getUint8(104);
-  const pointSize = view.getUint16(105, true);
+  // Byte 107: number of point records (legacy 32-bit field; sufficient for most tiles)
+  const pointCount    = view.getUint32(107, true);
+  // Byte 104: point data format ID (0=basic XYZ, 1=XYZ+time, 6=LAS 1.4 extended, etc.)
+  const pointFormat   = view.getUint8(104);  // read but not used — structure is the same for our purposes
+  // Byte 105: size in bytes of each point record
+  const pointSize     = view.getUint16(105, true);
 
-  const xScale = view.getFloat64(131, true);
-  const yScale = view.getFloat64(139, true);
-  const zScale = view.getFloat64(147, true);
+  // Bytes 131–178: scale and offset values for X, Y, Z.
+  // LAS stores coordinates as integers to save space. The real-world value is:
+  //   real = (stored_int × scale) + offset
+  // Scale is typically something like 0.001 (millimeter precision).
+  const xScale  = view.getFloat64(131, true);
+  const yScale  = view.getFloat64(139, true);
+  const zScale  = view.getFloat64(147, true);
   const xOffset = view.getFloat64(155, true);
   const yOffset = view.getFloat64(163, true);
   const zOffset = view.getFloat64(171, true);
 
-  const positions = new Float32Array(pointCount * 3);
-  const intensities = new Float32Array(pointCount);
+  // Pre-allocate output arrays. Float32Array is more memory-efficient than
+  // a regular JavaScript number array (4 bytes per value vs 8 bytes).
+  const positions   = new Float32Array(pointCount * 3); // [x0,y0,z0, x1,y1,z1, ...]
+  const intensities = new Float32Array(pointCount);     // [i0, i1, i2, ...]
 
+  // Read each point record sequentially.
   for (let i = 0; i < pointCount; i++) {
-    const off = offsetToData + i * pointSize;
+    const off = offsetToData + i * pointSize; // byte offset of this point's record
+
+    // X, Y, Z are at byte offsets 0, 4, 8 within each point record (signed 32-bit int)
     positions[i * 3 + 0] = view.getInt32(off + 0, true) * xScale + xOffset;
     positions[i * 3 + 1] = view.getInt32(off + 4, true) * yScale + yOffset;
     positions[i * 3 + 2] = view.getInt32(off + 8, true) * zScale + zOffset;
+
+    // Intensity is at byte offset 12 (unsigned 16-bit int, range 0–65535).
+    // Normalize to 0–1 by dividing by the max value.
     intensities[i] = view.getUint16(off + 12, true) / 65535;
   }
 
@@ -148,6 +209,15 @@ function parseLasHeader(buffer: ArrayBuffer): PointCloudChunk | null {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Recursively walks the EPT hierarchy tree to collect the addresses of all
+ * nodes that should be fetched, up to maxDepth levels deep.
+ *
+ * The EPT hierarchy JSON uses keys like "0-0-0-0", "1-0-0-0", "1-1-0-0" etc.
+ * Each node at depth D has up to 8 children at depth D+1, positioned by
+ * doubling the parent's X/Y/Z and adding 0 or 1 in each axis — this is
+ * the standard octree subdivision pattern.
+ */
 function collectNodes(
   hierarchy: HierarchyNode,
   d: number,
@@ -158,11 +228,13 @@ function collectNodes(
   result: Array<{ d: number; x: number; y: number; z: number }>
 ): void {
   const key = `${d}-${x}-${y}-${z}`;
-  if (!(key in hierarchy)) return;
-  result.push({ d, x, y, z });
-  if (d >= maxDepth) return;
+  if (!(key in hierarchy)) return; // this node doesn't exist in the dataset — stop recursing
 
-  // EPT children: 8 octants
+  result.push({ d, x, y, z }); // this node exists, add it to the fetch list
+  if (d >= maxDepth) return;    // don't go deeper than the requested level
+
+  // Each parent splits into 8 children (2 splits per axis: dx=0|1, dy=0|1, dz=0|1).
+  // Child address = (parent * 2) + 0 or 1 per axis.
   for (let dx = 0; dx < 2; dx++) {
     for (let dy = 0; dy < 2; dy++) {
       for (let dz = 0; dz < 2; dz++) {
@@ -180,15 +252,21 @@ function collectNodes(
   }
 }
 
+/**
+ * Concatenates multiple Float32Arrays into one, capping the total length at maxLen.
+ * Used to merge per-tile position arrays into the single buffer Three.js needs.
+ */
 function mergeFloat32Arrays(arrays: Float32Array[], maxLen: number): Float32Array {
   const totalLen = Math.min(
-    arrays.reduce((sum, a) => sum + a.length, 0),
+    arrays.reduce((sum, a) => sum + a.length, 0), // sum of all array lengths
     maxLen
   );
   const merged = new Float32Array(totalLen);
   let offset = 0;
   for (const arr of arrays) {
     if (offset >= totalLen) break;
+    // subarray() gives a view into the source array without copying — then
+    // merged.set() copies that slice into the right position in the output.
     const chunk = arr.subarray(0, Math.min(arr.length, totalLen - offset));
     merged.set(chunk, offset);
     offset += chunk.length;
