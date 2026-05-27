@@ -7,16 +7,15 @@
 import React from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { Pole } from '../types/Pole';
-import { mockPoles } from '../data/mockPoles';
 import PoleCard from './PoleCard';
 
-// Props this component accepts from its parent (App.tsx).
 interface PoleMapProps {
-    onPoleSelect: (pole: Pole) => void; // called when user clicks a marker
-    selectedPole: Pole | null;          // currently selected pole (can be none)
+    onPoleSelect: (pole: Pole) => void;
+    selectedPole: Pole | null;
+    poles: Pole[];
 }
 
-const PoleMap: React.FC<PoleMapProps> = ({ onPoleSelect, selectedPole }) => {
+const PoleMap: React.FC<PoleMapProps> = ({ onPoleSelect, selectedPole, poles }) => {
     return (
         // Side-by-side layout: map on the left (flex: 2), detail panel on the right (flex: 1).
         // flex: 2 means the map gets 2/3 of the space, the panel gets 1/3.
@@ -54,7 +53,7 @@ const PoleMap: React.FC<PoleMapProps> = ({ onPoleSelect, selectedPole }) => {
                       clicking a marker calls onPoleSelect, which updates the
                       selectedPole state in App.tsx and shows the detail panel.
                     */}
-                    {mockPoles.map(pole => (
+                    {poles.map((pole: Pole) => (
                         <Marker
                             key={pole.id}
                             position={[pole.latitude, pole.longitude]}

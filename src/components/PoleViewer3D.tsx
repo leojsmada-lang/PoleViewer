@@ -383,22 +383,44 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 // Pass 2: shift so the nearest-point terrain is at Y=0 (pole base level).
                 for (let i = 0; i < chunk.count; i++) translated[i * 3 + 1] -= baseElev;
 
+                // Z-clamp: discard outlier points more than 20m below or 50m above ground.
+                // Raw LiDAR can include underground noise, birds, and low-flying aircraft.
+                const CLAMP_MIN = -20;
+                const CLAMP_MAX = 50;
+                let validCount = 0;
+                for (let i = 0; i < chunk.count; i++) {
+                    const y = translated[i * 3 + 1];
+                    if (y >= CLAMP_MIN && y <= CLAMP_MAX) validCount++;
+                }
+                const filteredPos = new Float32Array(validCount * 3);
+                let fi = 0;
+                for (let i = 0; i < chunk.count; i++) {
+                    const y = translated[i * 3 + 1];
+                    if (y >= CLAMP_MIN && y <= CLAMP_MAX) {
+                        filteredPos[fi * 3 + 0] = translated[i * 3 + 0];
+                        filteredPos[fi * 3 + 1] = y;
+                        filteredPos[fi * 3 + 2] = translated[i * 3 + 2];
+                        fi++;
+                    }
+                }
+                console.log(`[LiDAR] Z-clamp [${CLAMP_MIN},${CLAMP_MAX}]m kept ${validCount}/${chunk.count} pts`);
+
                 // 5. Elevation-based color gradient.
                 //    Each point gets a color based on how high it is relative to the max height.
                 //    t = 0 → dark blue (lowest points, likely water/pavement)
                 //    t = 0.5 → green (mid-elevation, likely grass/shrubs)
                 //    t = 1 → gold (highest points, likely building roofs or treetops)
                 //    THREE.Color.lerp() linearly interpolates between two colors.
-                const colors = new Float32Array(chunk.count * 3);
+                const colors = new Float32Array(validCount * 3);
                 let maxH = 0;
-                for (let i = 0; i < chunk.count; i++) {
-                    if (translated[i * 3 + 1] > maxH) maxH = translated[i * 3 + 1];
+                for (let i = 0; i < validCount; i++) {
+                    if (filteredPos[i * 3 + 1] > maxH) maxH = filteredPos[i * 3 + 1];
                 }
                 const cLow  = new THREE.Color(0x1a4a6e); // dark blue
                 const cMid  = new THREE.Color(0x5a8a3c); // green (matches placeholder ground)
                 const cHigh = new THREE.Color(0xd4a843); // gold
-                for (let i = 0; i < chunk.count; i++) {
-                    const t = Math.min(translated[i * 3 + 1] / Math.max(maxH, 1), 1);
+                for (let i = 0; i < validCount; i++) {
+                    const t = Math.min(filteredPos[i * 3 + 1] / Math.max(maxH, 1), 1);
                     const c = t < 0.5
                         ? cLow.clone().lerp(cMid, t * 2)        // blend low→mid in first half
                         : cMid.clone().lerp(cHigh, (t - 0.5) * 2); // blend mid→high in second half
@@ -411,7 +433,7 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 //    BufferGeometry holds raw Float32Arrays — the most efficient form
                 //    for the GPU. Each attribute (position, color) maps to a vertex shader input.
                 const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.BufferAttribute(translated, 3)); // 3 floats per point
+                geometry.setAttribute('position', new THREE.BufferAttribute(filteredPos, 3)); // 3 floats per point
                 geometry.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
 
                 // PointsMaterial renders each vertex as a small square sprite.
@@ -440,7 +462,7 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
 
                 scene.add(pointCloud);
 
-                setLidarPoints(chunk.count);
+                setLidarPoints(validCount);
                 setLidarProgress(100);
                 setLidarStatus('ready');
                 setLidarStage('');
