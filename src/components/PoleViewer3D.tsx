@@ -317,24 +317,32 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 //      b) swap Z→Y and Y→-Z to match Three.js conventions
                 const [poleEasting, poleNorthing] = latLngToWebMercator(pole.latitude, pole.longitude);
 
-                // Keep elevation centred on the cloud mean so the minY shift below
-                // brings the lowest point to Y=0 regardless of absolute altitude.
-                let cz = 0;
-                for (let i = 0; i < chunk.count; i++) {
-                    cz += chunk.positions[i * 3 + 2];
-                }
-                cz /= chunk.count;
-
+                // Pass 1: centre XZ on the pole, keep raw elevations (metres AMSL).
+                // Track both a local minY (within 2 km of the pole) and a global fallback.
+                // Using a local baseline avoids far-away low-elevation points (e.g. coastal
+                // areas in the same EPT dataset) dragging the ground plane hundreds of
+                // metres below the actual terrain at the pole's location.
+                const LOCAL_RADIUS = 2000; // Web Mercator metres (~2 km)
                 const translated = new Float32Array(chunk.count * 3);
-                let minY = Infinity;
+                let localMinY  = Infinity;
+                let globalMinY = Infinity;
                 for (let i = 0; i < chunk.count; i++) {
-                    translated[i * 3 + 0] = chunk.positions[i * 3 + 0] - poleEasting;    // X stays X (easting offset)
-                    translated[i * 3 + 1] = chunk.positions[i * 3 + 2] - cz;             // LiDAR Z (elevation) → Three.js Y
-                    translated[i * 3 + 2] = -(chunk.positions[i * 3 + 1] - poleNorthing);// LiDAR Y (northing) → Three.js -Z
-                    if (translated[i * 3 + 1] < minY) minY = translated[i * 3 + 1];
+                    const tx = chunk.positions[i * 3 + 0] - poleEasting;
+                    const ty = chunk.positions[i * 3 + 2];              // raw elevation → Three.js Y
+                    const tz = -(chunk.positions[i * 3 + 1] - poleNorthing);
+                    translated[i * 3 + 0] = tx;
+                    translated[i * 3 + 1] = ty;
+                    translated[i * 3 + 2] = tz;
+                    if (ty < globalMinY) globalMinY = ty;
+                    if (Math.abs(tx) < LOCAL_RADIUS && Math.abs(tz) < LOCAL_RADIUS && ty < localMinY) {
+                        localMinY = ty;
+                    }
                 }
-                // Shift the whole cloud so the lowest point sits at Y=0 (ground level)
-                for (let i = 0; i < chunk.count; i++) translated[i * 3 + 1] -= minY;
+                const baseElev = isFinite(localMinY) ? localMinY : globalMinY;
+                console.log(`[LiDAR] baseElev=${baseElev.toFixed(1)}m (localMin=${isFinite(localMinY)?localMinY.toFixed(1):'none'}, globalMin=${globalMinY.toFixed(1)})`);
+
+                // Pass 2: shift so the lowest local point sits at Y=0 (ground level).
+                for (let i = 0; i < chunk.count; i++) translated[i * 3 + 1] -= baseElev;
 
                 // 5. Elevation-based color gradient.
                 //    Each point gets a color based on how high it is relative to the max height.
