@@ -166,24 +166,25 @@ let lazPerfModulePromise: Promise<any> | null = null;
 
 function getLazPerfModule(): Promise<any> {
   if (!lazPerfModulePromise) {
-    lazPerfModulePromise = import('laz-perf')
-      .then((m: any) => {
-        // The package exports { create, createLazPerf, LazPerf }.
-        // `create` is the canonical factory; fall back to others just in case.
+    // locateFile() is not reliable here because webpack may resolve the .wasm
+    // path at build time before our override runs. Instead we fetch the WASM
+    // binary ourselves from the known public URL and pass it via `wasmBinary`.
+    // Emscripten skips its own network fetch entirely when wasmBinary is provided.
+    const publicUrl = (process.env.PUBLIC_URL ?? '').replace(/\/$/, '');
+    const wasmUrl = `${publicUrl}/laz-perf.wasm`;
+
+    lazPerfModulePromise = Promise.all([
+      import('laz-perf'),
+      fetch(wasmUrl).then((r) => {
+        if (!r.ok) throw new Error(`laz-perf WASM fetch failed: ${r.status} ${wasmUrl}`);
+        return r.arrayBuffer();
+      }),
+    ])
+      .then(([m, wasmBinary]: [any, ArrayBuffer]) => {
         const factory = m.create ?? m.createLazPerf ?? m.default;
         if (typeof factory !== 'function') throw new Error('laz-perf: no factory export found');
-
-        // CRA's webpack does not automatically bundle .wasm files from node_modules,
-        // so the Emscripten runtime would try to fetch laz-perf.wasm from the wrong
-        // path and receive a 404 HTML page instead of the binary.
-        // Fix: we copied laz-perf.wasm into public/ so it is served as a static asset,
-        // and we override locateFile() to tell the runtime where to find it.
-        // process.env.PUBLIC_URL is set by CRA to the app's base path (e.g. "" or "/app").
-        const publicUrl = (process.env.PUBLIC_URL ?? '').replace(/\/$/, '');
-        return factory({
-          locateFile: (path: string) =>
-            path.endsWith('.wasm') ? `${publicUrl}/laz-perf.wasm` : path,
-        });
+        // Pass the pre-fetched binary — Emscripten uses it directly without re-fetching.
+        return factory({ wasmBinary });
       })
       .catch((err) => {
         lazPerfModulePromise = null; // allow retry on transient errors
