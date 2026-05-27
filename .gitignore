@@ -11,6 +11,9 @@
 # production
 /build
 
+# Salesforce DX (accidentally committed, not part of this project)
+/.sfdx
+
 # misc
 .DS_Store
 .env.local
