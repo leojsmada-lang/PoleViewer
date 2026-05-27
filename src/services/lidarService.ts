@@ -50,15 +50,37 @@ export interface EptManifest {
 const EPT_BASE = 'https://s3-us-west-2.amazonaws.com/usgs-lidar-public';
 
 /**
- * Returns the list of USGS LiDAR datasets available for a given location.
- * The lat/lng parameters are accepted for future use (e.g. filtering by
- * bounding box) but are not used while the dataset list is hardcoded.
+ * Returns the list of USGS LiDAR datasets available for a given location,
+ * filtered to only those whose geographic bounds contain the target point.
+ * Datasets are ordered with the best-fitting (smallest area) first so the
+ * most localised survey is preferred over a coarser statewide one.
  */
 export async function findDatasetsForLocation(
-  _lat: number,
-  _lng: number,
+  lat: number,
+  lng: number,
 ): Promise<EptDataset[]> {
-  return getFallbackDatasets();
+  const all = getFallbackDatasets();
+
+  // Convert lat/lng to Web Mercator so we can compare against the EPSG:3857
+  // bounds stored in each dataset entry.
+  const R = 6378137.0;
+  const targetX = lng * (Math.PI / 180) * R;
+  const targetY = Math.log(Math.tan(Math.PI / 4 + lat * (Math.PI / 360))) * R;
+
+  const matching = all.filter(ds => {
+    const [minX, minY, , maxX, maxY] = ds.bounds;
+    return targetX >= minX && targetX <= maxX && targetY >= minY && targetY <= maxY;
+  });
+
+  // Sort smallest-area first so the most focused dataset is preferred.
+  matching.sort((a, b) => {
+    const areaA = (a.bounds[3] - a.bounds[0]) * (a.bounds[4] - a.bounds[1]);
+    const areaB = (b.bounds[3] - b.bounds[0]) * (b.bounds[4] - b.bounds[1]);
+    return areaA - areaB;
+  });
+
+  // Fall back to all datasets if none match (shouldn't happen with good bounds).
+  return matching.length > 0 ? matching : all;
 }
 
 /**
@@ -106,6 +128,15 @@ export function buildHierarchyUrl(eptUrl: string, d: number, x: number, y: numbe
  */
 function getFallbackDatasets(): EptDataset[] {
   return [
+    {
+      // Covers Fayette County (Atlanta metro south) — the primary dataset for
+      // the mock poles at lat≈33.47, lng≈-84.46.
+      name: 'GA_Central_5_2018',
+      eptUrl: `${EPT_BASE}/GA_Central_5_2018/ept.json`,
+      bounds: [-9418978, 3849315, -69575, -9279512, 3988781, 69891],
+      srs: 'EPSG:3857',
+      points: 39_481_432_268,
+    },
     {
       name: 'GA_Central_1_2018',
       eptUrl: `${EPT_BASE}/GA_Central_1_2018/ept.json`,
