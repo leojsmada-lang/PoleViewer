@@ -317,6 +317,20 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 //      b) swap Z→Y and Y→-Z to match Three.js conventions
                 const [poleEasting, poleNorthing] = latLngToWebMercator(pole.latitude, pole.longitude);
 
+                // Debug: log coordinate ranges to diagnose CRS mismatch
+                let minX = Infinity, maxX = -Infinity, minY2 = Infinity, maxY2 = -Infinity, minZ = Infinity, maxZ = -Infinity;
+                for (let i = 0; i < Math.min(chunk.count, 400_000); i++) {
+                    const cx = chunk.positions[i * 3 + 0];
+                    const cy = chunk.positions[i * 3 + 1];
+                    const cz = chunk.positions[i * 3 + 2];
+                    if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+                    if (cy < minY2) minY2 = cy; if (cy > maxY2) maxY2 = cy;
+                    if (cz < minZ) minZ = cz; if (cz > maxZ) maxZ = cz;
+                }
+                console.log(`[LiDAR] Chunk coord ranges — X:[${minX.toFixed(1)}, ${maxX.toFixed(1)}] Y:[${minY2.toFixed(1)}, ${maxY2.toFixed(1)}] Z:[${minZ.toFixed(1)}, ${maxZ.toFixed(1)}]`);
+                console.log(`[LiDAR] Pole Web Mercator — easting:${poleEasting.toFixed(1)} northing:${poleNorthing.toFixed(1)}`);
+                console.log(`[LiDAR] First 3 pts — (${chunk.positions[0].toFixed(1)},${chunk.positions[1].toFixed(1)},${chunk.positions[2].toFixed(1)}) (${chunk.positions[3].toFixed(1)},${chunk.positions[4].toFixed(1)},${chunk.positions[5].toFixed(1)}) (${chunk.positions[6].toFixed(1)},${chunk.positions[7].toFixed(1)},${chunk.positions[8].toFixed(1)})`);
+
                 // Pass 1: centre XZ on the pole, keep raw elevations (metres AMSL).
                 // Track both a local minY (within 2 km of the pole) and a global fallback.
                 // Using a local baseline avoids far-away low-elevation points (e.g. coastal
