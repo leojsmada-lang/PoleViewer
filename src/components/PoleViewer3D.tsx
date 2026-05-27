@@ -340,31 +340,47 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
                 console.log(`[LiDAR] Pole Web Mercator — easting:${poleEasting.toFixed(1)} northing:${poleNorthing.toFixed(1)}`);
                 console.log(`[LiDAR] First 3 pts — (${chunk.positions[0].toFixed(1)},${chunk.positions[1].toFixed(1)},${chunk.positions[2].toFixed(1)}) (${chunk.positions[3].toFixed(1)},${chunk.positions[4].toFixed(1)},${chunk.positions[5].toFixed(1)}) (${chunk.positions[6].toFixed(1)},${chunk.positions[7].toFixed(1)},${chunk.positions[8].toFixed(1)})`);
 
-                // Pass 1: centre XZ on the pole, keep raw elevations (metres AMSL).
-                // Track both a local minY (within 2 km of the pole) and a global fallback.
-                // Using a local baseline avoids far-away low-elevation points (e.g. coastal
-                // areas in the same EPT dataset) dragging the ground plane hundreds of
-                // metres below the actual terrain at the pole's location.
-                const LOCAL_RADIUS = 10_000; // Web Mercator metres (~10 km)
+                // Pass 1: centre XZ on the pole; find the elevation baseline.
+                //
+                // We want Y=0 in Three.js to equal the terrain elevation at the pole.
+                // Strategy: find the LiDAR point nearest to the pole horizontally —
+                // its Z is our best available estimate of the ground at that location.
+                // Fallbacks: local minimum within 10 km, then global minimum.
+                //
+                // We do NOT use the local minimum directly because it may be from a
+                // river valley or depression kilometres away, which would push the
+                // Fayette County plateau (~270 m AMSL) up to Y≈200 in Three.js,
+                // far above the camera (at ~32 m) and the pole model (0–40 units).
                 const translated = new Float32Array(chunk.count * 3);
-                let localMinY  = Infinity;
-                let globalMinY = Infinity;
+                let nearestDist2 = Infinity;
+                let nearestZ     = NaN;
+                let localMinY    = Infinity;
+                let globalMinY   = Infinity;
+                const LOCAL_RADIUS = 10_000; // metres for localMin fallback
+
                 for (let i = 0; i < chunk.count; i++) {
                     const tx = chunk.positions[i * 3 + 0] - poleEasting;
-                    const ty = chunk.positions[i * 3 + 2];              // raw elevation → Three.js Y
+                    const ty = chunk.positions[i * 3 + 2];   // raw elevation → Three.js Y
                     const tz = -(chunk.positions[i * 3 + 1] - poleNorthing);
                     translated[i * 3 + 0] = tx;
                     translated[i * 3 + 1] = ty;
                     translated[i * 3 + 2] = tz;
                     if (ty < globalMinY) globalMinY = ty;
-                    if (Math.abs(tx) < LOCAL_RADIUS && Math.abs(tz) < LOCAL_RADIUS && ty < localMinY) {
-                        localMinY = ty;
+                    if (Math.abs(tx) < LOCAL_RADIUS && Math.abs(tz) < LOCAL_RADIUS && ty < localMinY) localMinY = ty;
+                    // Track nearest point with a plausible above-sea-level Z
+                    if (ty > 0) {
+                        const d2 = tx * tx + tz * tz;
+                        if (d2 < nearestDist2) { nearestDist2 = d2; nearestZ = ty; }
                     }
                 }
-                const baseElev = isFinite(localMinY) ? localMinY : globalMinY;
-                console.log(`[LiDAR] baseElev=${baseElev.toFixed(1)}m (localMin=${isFinite(localMinY)?localMinY.toFixed(1):'none'}, globalMin=${globalMinY.toFixed(1)})`);
 
-                // Pass 2: shift so the lowest local point sits at Y=0 (ground level).
+                const baseElev = isFinite(nearestZ) ? nearestZ
+                    : isFinite(localMinY) ? localMinY
+                    : globalMinY;
+                const nearestM = isFinite(nearestDist2) ? Math.sqrt(nearestDist2).toFixed(0) : 'n/a';
+                console.log(`[LiDAR] baseElev=${baseElev.toFixed(1)}m — nearest=${isFinite(nearestZ)?nearestZ.toFixed(1):'none'} @${nearestM}m, localMin=${isFinite(localMinY)?localMinY.toFixed(1):'none'}, globalMin=${globalMinY.toFixed(1)}`);
+
+                // Pass 2: shift so the nearest-point terrain is at Y=0 (pole base level).
                 for (let i = 0; i < chunk.count; i++) translated[i * 3 + 1] -= baseElev;
 
                 // 5. Elevation-based color gradient.
