@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import './fixLeafletIcons';
-import { findNearestPole } from './services/overpassService';
+import { findPolesInArea } from './services/overpassService';
 import { Pole } from './types/Pole';
 import PoleMap from './components/PoleMap';
 import PoleViewer3D from './components/PoleViewer3D';
 
 function App() {
     const [selectedPole, setSelectedPole]   = useState<Pole | null>(null);
+    const [nearbyPoles, setNearbyPoles]     = useState<Pole[]>([]);
     const [activeTab, setActiveTab]         = useState<'map' | '3d'>('map');
     const [clickPoint, setClickPoint]       = useState<{ lat: number; lng: number } | null>(null);
     const [isSearching, setIsSearching]     = useState(false);
@@ -14,10 +15,11 @@ function App() {
     const handleMapClick = async (lat: number, lng: number) => {
         setClickPoint({ lat, lng });
         setSelectedPole(null);
+        setNearbyPoles([]);
         setIsSearching(true);
-        const pole = await findNearestPole(lat, lng);
+        const poles = await findPolesInArea(lat, lng);
         setIsSearching(false);
-        if (pole) setSelectedPole(pole);
+        setNearbyPoles(poles);
     };
 
     const tabStyle = (tab: 'map' | '3d'): React.CSSProperties => ({
@@ -43,7 +45,7 @@ function App() {
             }}>
                 <h1 style={{ margin: 0 }}>Pole Inspection Viewer</h1>
                 <p style={{ margin: '4px 0 0 0', opacity: 0.7 }}>
-                    Click the map to locate the nearest OSM power pole and render it in 3D with USGS LiDAR.
+                    Click the map to find nearby OSM power poles, select one to inspect, and render it in 3D with USGS LiDAR.
                 </p>
             </div>
 
@@ -65,7 +67,8 @@ function App() {
                     <PoleMap
                         onMapClick={handleMapClick}
                         clickPoint={clickPoint}
-                        nearestPole={selectedPole}
+                        nearbyPoles={nearbyPoles}
+                        selectedPole={selectedPole}
                         isSearching={isSearching}
                         onPoleSelect={setSelectedPole}
                     />

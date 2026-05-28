@@ -21,17 +21,11 @@ interface OverpassResponse {
 }
 
 /**
- * Finds the nearest OSM power pole within 500 m of the given lat/lng.
- * Uses the Overpass `around` filter which constrains results to a radius
- * around a point rather than a rectangular bounding box.
- *
- * Returns null if no pole is found nearby or the request fails.
+ * Returns all OSM power poles within 1,500 m of the given lat/lng so the
+ * user can pick one from the map rather than relying on auto-selection.
  */
-export async function findNearestPole(lat: number, lng: number): Promise<Pole | null> {
-  // around:500 = search within 500 metres of the given point.
-  // Fetching up to 10 candidates lets us pick the geometrically nearest one
-  // ourselves, since Overpass returns results sorted by node ID, not distance.
-  const query = `[out:json][timeout:15];node["power"="pole"](around:1500,${lat},${lng});out body 20;`;
+export async function findPolesInArea(lat: number, lng: number): Promise<Pole[]> {
+  const query = `[out:json][timeout:15];node["power"="pole"](around:1500,${lat},${lng});out body 50;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
 
   try {
@@ -40,21 +34,11 @@ export async function findNearestPole(lat: number, lng: number): Promise<Pole | 
     const data: OverpassResponse = await res.json();
 
     const nodes = data.elements.filter(el => el.type === 'node' && el.lat && el.lon);
-    if (nodes.length === 0) return null;
-
-    // Pick the node closest to the clicked point by straight-line distance.
-    // Math.hypot(dx, dy) is the 2D Euclidean distance — accurate enough at this scale.
-    const nearest = nodes.reduce((best, el) => {
-      const d  = Math.hypot(el.lat - lat, el.lon - lng);
-      const db = Math.hypot(best.lat - lat, best.lon - lng);
-      return d < db ? el : best;
-    });
-
-    console.log(`[overpass] Nearest pole OSM id=${nearest.id} at (${nearest.lat}, ${nearest.lon})`);
-    return nodeToP(nearest);
+    console.log(`[overpass] Found ${nodes.length} poles within 1,500 m of (${lat}, ${lng})`);
+    return nodes.map(nodeToP);
   } catch (err) {
-    console.warn('[overpass] findNearestPole failed:', err);
-    return null;
+    console.warn('[overpass] findPolesInArea failed:', err);
+    return [];
   }
 }
 
