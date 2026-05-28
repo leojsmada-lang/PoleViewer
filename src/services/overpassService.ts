@@ -21,23 +21,24 @@ interface OverpassResponse {
 }
 
 /**
- * Returns all OSM power poles within 1,500 m of the given lat/lng so the
- * user can pick one from the map rather than relying on auto-selection.
+ * Returns all OSM power poles within the given map bounding box.
+ * Capped at 200 results to keep rendering snappy.
  */
-export async function findPolesInArea(lat: number, lng: number): Promise<Pole[]> {
-  const query = `[out:json][timeout:15];node["power"="pole"](around:1500,${lat},${lng});out body 50;`;
+export async function findPolesInBounds(
+  south: number, west: number, north: number, east: number
+): Promise<Pole[]> {
+  const query = `[out:json][timeout:25];node["power"="pole"](${south},${west},${north},${east});out body 200;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
 
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
     const data: OverpassResponse = await res.json();
-
     const nodes = data.elements.filter(el => el.type === 'node' && el.lat && el.lon);
-    console.log(`[overpass] Found ${nodes.length} poles within 1,500 m of (${lat}, ${lng})`);
+    console.log(`[overpass] Found ${nodes.length} poles in viewport`);
     return nodes.map(nodeToP);
   } catch (err) {
-    console.warn('[overpass] findPolesInArea failed:', err);
+    console.warn('[overpass] findPolesInBounds failed:', err);
     return [];
   }
 }

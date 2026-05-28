@@ -1,41 +1,41 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Pole } from '../types/Pole';
 import PoleCard from './PoleCard';
 
-const ClickHandler: React.FC<{ onClick: (lat: number, lng: number) => void }> = ({ onClick }) => {
-    useMapEvents({
-        click(e) {
-            onClick(e.latlng.lat, e.latlng.lng);
-        },
-    });
-    return null;
-};
+const MIN_ZOOM = 13;
 
-// Auto-fits the map viewport to show all found poles after a search.
-const FitBounds: React.FC<{ poles: Pole[] }> = ({ poles }) => {
+// Fires onBoundsChange whenever the user stops panning or zooming (debounced
+// 600 ms). Also fires once on mount so the initial viewport is queried.
+const ViewportPoller: React.FC<{
+    onBoundsChange: (s: number, w: number, n: number, e: number, zoom: number) => void;
+}> = ({ onBoundsChange }) => {
     const map = useMap();
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Keep a stable ref so the debounced callback always calls the latest version.
+    const cbRef = useRef(onBoundsChange);
+    cbRef.current = onBoundsChange;
+
+    const schedule = useCallback(() => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+            const b = map.getBounds();
+            cbRef.current(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), map.getZoom());
+        }, 600);
+    }, [map]);
+
+    useMapEvents({ moveend: schedule, zoomend: schedule });
+
     useEffect(() => {
-        if (poles.length > 0) {
-            const bounds = L.latLngBounds(poles.map(p => [p.latitude, p.longitude] as [number, number]));
-            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
-        }
-    }, [poles, map]);
+        schedule();
+        return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+    }, [schedule]);
+
     return null;
 };
 
-const redIcon = new L.Icon({
-    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-    iconSize:   [25, 41],
-    iconAnchor: [12, 41],
-    popupAnchor:[1, -34],
-    shadowSize: [41, 41],
-});
-
-// SVG pin: circle on top of a vertical pole stem.
-// Orange = unselected, green = selected.
+// SVG pin: wooden stem + crossarm circle. Orange = unselected, green = selected.
 const createPoleIcon = (selected: boolean) => L.divIcon({
     className: '',
     html: `<svg width="26" height="38" viewBox="0 0 26 38" xmlns="http://www.w3.org/2000/svg">
@@ -44,26 +44,26 @@ const createPoleIcon = (selected: boolean) => L.divIcon({
         <circle cx="13" cy="9" r="8" fill="${selected ? '#27ae60' : '#e67e22'}" stroke="white" stroke-width="2"/>
         <text x="13" y="13" text-anchor="middle" font-size="11" fill="white" font-weight="bold" font-family="Arial,sans-serif">P</text>
     </svg>`,
-    iconSize: [26, 38],
-    iconAnchor: [13, 38],
+    iconSize:    [26, 38],
+    iconAnchor:  [13, 38],
     popupAnchor: [0, -38],
 });
 
 interface PoleMapProps {
-    onMapClick:   (lat: number, lng: number) => void;
-    clickPoint:   { lat: number; lng: number } | null;
-    nearbyPoles:  Pole[];
-    selectedPole: Pole | null;
-    isSearching:  boolean;
-    onPoleSelect: (pole: Pole) => void;
+    onBoundsChange: (s: number, w: number, n: number, e: number, zoom: number) => void;
+    nearbyPoles:    Pole[];
+    selectedPole:   Pole | null;
+    isSearching:    boolean;
+    isZoomedOut:    boolean;
+    onPoleSelect:   (pole: Pole) => void;
 }
 
 const PoleMap: React.FC<PoleMapProps> = ({
-    onMapClick,
-    clickPoint,
+    onBoundsChange,
     nearbyPoles,
     selectedPole,
     isSearching,
+    isZoomedOut,
     onPoleSelect,
 }) => {
     return (
@@ -81,17 +81,9 @@ const PoleMap: React.FC<PoleMapProps> = ({
                         attribution='&copy; OpenStreetMap contributors'
                     />
 
-                    <ClickHandler onClick={onMapClick} />
-                    <FitBounds poles={nearbyPoles} />
+                    <ViewportPoller onBoundsChange={onBoundsChange} />
 
-                    {/* Red pin at clicked point while OSM is loading */}
-                    {clickPoint && isSearching && (
-                        <Marker position={[clickPoint.lat, clickPoint.lng]} icon={redIcon}>
-                            <Popup>Searching for poles…</Popup>
-                        </Marker>
-                    )}
-
-                    {/* All nearby poles as clickable icons */}
+                    {/* All visible poles as clickable icons */}
                     {nearbyPoles.map(pole => {
                         const isSelected = selectedPole?.id === pole.id;
                         return (
@@ -124,83 +116,70 @@ const PoleMap: React.FC<PoleMapProps> = ({
                     })}
                 </MapContainer>
 
-                {/* Searching overlay */}
+                {/* Overlay badges */}
                 {isSearching && (
-                    <div style={{
-                        position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
-                        background: 'rgba(0,0,0,0.65)', color: '#fff',
-                        padding: '6px 14px', borderRadius: 20,
-                        fontSize: 13, fontFamily: 'monospace', zIndex: 1000,
-                        pointerEvents: 'none',
-                    }}>
-                        Searching OSM…
+                    <div style={overlayStyle}>Querying OSM…</div>
+                )}
+                {isZoomedOut && !isSearching && (
+                    <div style={overlayStyle}>Zoom in (level {MIN_ZOOM}+) to see poles</div>
+                )}
+                {!isZoomedOut && !isSearching && nearbyPoles.length > 0 && (
+                    <div style={{ ...overlayStyle, background: 'rgba(39,174,96,0.85)' }}>
+                        {nearbyPoles.length} pole{nearbyPoles.length !== 1 ? 's' : ''} in view — click a pin to select
                     </div>
                 )}
-
-                {/* Idle hint */}
-                {!clickPoint && !isSearching && (
-                    <div style={{
-                        position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
-                        background: 'rgba(0,0,0,0.55)', color: '#fff',
-                        padding: '6px 14px', borderRadius: 20,
-                        fontSize: 13, fontFamily: 'monospace', zIndex: 1000,
-                        pointerEvents: 'none',
-                    }}>
-                        Click anywhere to find nearby poles
-                    </div>
-                )}
-
-                {/* Results count badge */}
-                {!isSearching && nearbyPoles.length > 0 && (
-                    <div style={{
-                        position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
-                        background: 'rgba(39,174,96,0.85)', color: '#fff',
-                        padding: '6px 14px', borderRadius: 20,
-                        fontSize: 13, fontFamily: 'monospace', zIndex: 1000,
-                        pointerEvents: 'none',
-                    }}>
-                        {nearbyPoles.length} pole{nearbyPoles.length !== 1 ? 's' : ''} found — click a pin to select
-                    </div>
+                {!isZoomedOut && !isSearching && nearbyPoles.length === 0 && (
+                    <div style={overlayStyle}>No poles found in this area</div>
                 )}
             </div>
 
             {/* DETAIL PANEL */}
             <div style={{
-                flex: 1,
-                overflowY: 'auto',
-                backgroundColor: '#f8f9fa',
-                borderRadius: '8px',
-                padding: '16px',
+                flex: 1, overflowY: 'auto',
+                backgroundColor: '#f8f9fa', borderRadius: '8px', padding: '16px',
             }}>
                 <h3 style={{ margin: '0 0 16px 0', color: '#2c3e50' }}>Pole Details</h3>
+
                 {isSearching && (
-                    <div style={{ textAlign: 'center', color: '#888', marginTop: '40px' }}>
-                        <p>Querying OpenStreetMap…</p>
-                    </div>
+                    <div style={detailHintStyle}><p>Querying OpenStreetMap…</p></div>
                 )}
-                {!isSearching && selectedPole && <PoleCard pole={selectedPole} />}
-                {!isSearching && !selectedPole && nearbyPoles.length > 0 && (
-                    <div style={{ textAlign: 'center', color: '#666', marginTop: '40px' }}>
+                {!isSearching && selectedPole && (
+                    <PoleCard pole={selectedPole} />
+                )}
+                {!isSearching && !selectedPole && !isZoomedOut && nearbyPoles.length > 0 && (
+                    <div style={detailHintStyle}>
                         <p style={{ fontSize: 15 }}>
-                            <strong>{nearbyPoles.length}</strong> pole{nearbyPoles.length !== 1 ? 's' : ''} found nearby.
+                            <strong>{nearbyPoles.length}</strong> pole{nearbyPoles.length !== 1 ? 's' : ''} in view.
                         </p>
-                        <p style={{ fontSize: 13, color: '#999' }}>Click an orange pin on the map to inspect it.</p>
+                        <p style={{ fontSize: 13, color: '#999' }}>Click an orange pin to inspect it.</p>
                     </div>
                 )}
-                {!isSearching && !selectedPole && nearbyPoles.length === 0 && !clickPoint && (
-                    <div style={{ textAlign: 'center', color: '#999', marginTop: '40px' }}>
-                        <p>Click the map to find nearby poles</p>
+                {!isSearching && !selectedPole && isZoomedOut && (
+                    <div style={detailHintStyle}>
+                        <p style={{ fontSize: 13, color: '#999' }}>Zoom in on the map to discover poles.</p>
                     </div>
                 )}
-                {!isSearching && !selectedPole && nearbyPoles.length === 0 && clickPoint && (
-                    <div style={{ textAlign: 'center', color: '#c0392b', marginTop: '40px' }}>
-                        <p>No poles found within 1,500 m.</p>
-                        <p style={{ fontSize: 12 }}>Try clicking closer to a road or power line.</p>
+                {!isSearching && !selectedPole && !isZoomedOut && nearbyPoles.length === 0 && (
+                    <div style={detailHintStyle}>
+                        <p style={{ color: '#c0392b' }}>No poles found in this area.</p>
+                        <p style={{ fontSize: 12, color: '#999' }}>Try panning toward a road or power line.</p>
                     </div>
                 )}
             </div>
         </div>
     );
+};
+
+const overlayStyle: React.CSSProperties = {
+    position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
+    background: 'rgba(0,0,0,0.6)', color: '#fff',
+    padding: '6px 14px', borderRadius: 20,
+    fontSize: 13, fontFamily: 'monospace', zIndex: 1000,
+    pointerEvents: 'none', whiteSpace: 'nowrap',
+};
+
+const detailHintStyle: React.CSSProperties = {
+    textAlign: 'center', color: '#666', marginTop: '40px',
 };
 
 export default PoleMap;

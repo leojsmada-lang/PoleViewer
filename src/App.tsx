@@ -1,26 +1,42 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import './fixLeafletIcons';
-import { findPolesInArea } from './services/overpassService';
+import { findPolesInBounds } from './services/overpassService';
 import { Pole } from './types/Pole';
 import PoleMap from './components/PoleMap';
 import PoleViewer3D from './components/PoleViewer3D';
 
-function App() {
-    const [selectedPole, setSelectedPole]   = useState<Pole | null>(null);
-    const [nearbyPoles, setNearbyPoles]     = useState<Pole[]>([]);
-    const [activeTab, setActiveTab]         = useState<'map' | '3d'>('map');
-    const [clickPoint, setClickPoint]       = useState<{ lat: number; lng: number } | null>(null);
-    const [isSearching, setIsSearching]     = useState(false);
+const MIN_ZOOM = 13;
 
-    const handleMapClick = async (lat: number, lng: number) => {
-        setClickPoint({ lat, lng });
-        setSelectedPole(null);
-        setNearbyPoles([]);
+function App() {
+    const [selectedPole, setSelectedPole] = useState<Pole | null>(null);
+    const [nearbyPoles, setNearbyPoles]   = useState<Pole[]>([]);
+    const [activeTab, setActiveTab]       = useState<'map' | '3d'>('map');
+    const [isSearching, setIsSearching]   = useState(false);
+    const [isZoomedOut, setIsZoomedOut]   = useState(false);
+    const requestId = useRef(0);
+
+    const handleBoundsChange = useCallback(async (
+        south: number, west: number, north: number, east: number, zoom: number
+    ) => {
+        if (zoom < MIN_ZOOM) {
+            setIsZoomedOut(true);
+            setNearbyPoles([]);
+            setSelectedPole(null);
+            return;
+        }
+        setIsZoomedOut(false);
+
+        // Discard responses that arrive after a newer request has started.
+        const id = ++requestId.current;
         setIsSearching(true);
-        const poles = await findPolesInArea(lat, lng);
+        const poles = await findPolesInBounds(south, west, north, east);
+        if (id !== requestId.current) return;
+
         setIsSearching(false);
         setNearbyPoles(poles);
-    };
+        // Keep the selection only if the pole is still in the new result set.
+        setSelectedPole(prev => (prev && poles.some(p => p.id === prev.id) ? prev : null));
+    }, []);
 
     const tabStyle = (tab: 'map' | '3d'): React.CSSProperties => ({
         padding: '10px 24px',
@@ -45,7 +61,7 @@ function App() {
             }}>
                 <h1 style={{ margin: 0 }}>Pole Inspection Viewer</h1>
                 <p style={{ margin: '4px 0 0 0', opacity: 0.7 }}>
-                    Click the map to find nearby OSM power poles, select one to inspect, and render it in 3D with USGS LiDAR.
+                    Pan and zoom the map to discover OSM power poles. Click a pin to inspect it in 3D.
                 </p>
             </div>
 
@@ -65,11 +81,11 @@ function App() {
             {activeTab === 'map' && (
                 <div style={{ backgroundColor: '#fff', borderRadius: '8px', padding: '16px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
                     <PoleMap
-                        onMapClick={handleMapClick}
-                        clickPoint={clickPoint}
+                        onBoundsChange={handleBoundsChange}
                         nearbyPoles={nearbyPoles}
                         selectedPole={selectedPole}
                         isSearching={isSearching}
+                        isZoomedOut={isZoomedOut}
                         onPoleSelect={setSelectedPole}
                     />
                 </div>
@@ -83,7 +99,7 @@ function App() {
                     ) : (
                         <div style={{ textAlign: 'center', color: '#888', padding: '60px 0' }}>
                             <p style={{ fontSize: 16 }}>No pole selected.</p>
-                            <p style={{ fontSize: 13 }}>Go to Map View and click near a power line to find a pole.</p>
+                            <p style={{ fontSize: 13 }}>Go to Map View and click a pole pin to select one.</p>
                         </div>
                     )}
                 </div>
