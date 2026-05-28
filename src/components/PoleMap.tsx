@@ -56,6 +56,7 @@ interface PoleMapProps {
     isSearching:    boolean;
     isZoomedOut:    boolean;
     onPoleSelect:   (pole: Pole) => void;
+    onViewIn3D:     (pole: Pole) => void;
 }
 
 const PoleMap: React.FC<PoleMapProps> = ({
@@ -65,6 +66,7 @@ const PoleMap: React.FC<PoleMapProps> = ({
     isSearching,
     isZoomedOut,
     onPoleSelect,
+    onViewIn3D,
 }) => {
     return (
         <div style={{ display: 'flex', height: '500px', gap: '16px' }}>
@@ -100,7 +102,7 @@ const PoleMap: React.FC<PoleMapProps> = ({
                                     Lat: {pole.latitude.toFixed(5)}<br />
                                     Lng: {pole.longitude.toFixed(5)}<br />
                                     <button
-                                        onClick={() => onPoleSelect(pole)}
+                                        onClick={() => onViewIn3D(pole)}
                                         style={{
                                             marginTop: 6, padding: '4px 10px',
                                             background: '#3498db', color: 'white',
@@ -108,7 +110,7 @@ const PoleMap: React.FC<PoleMapProps> = ({
                                             cursor: 'pointer', fontSize: 12,
                                         }}
                                     >
-                                        Select this pole
+                                        View in 3D
                                     </button>
                                 </Popup>
                             </Marker>

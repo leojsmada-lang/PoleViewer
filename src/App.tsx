@@ -15,6 +15,11 @@ function App() {
     const [isZoomedOut, setIsZoomedOut]   = useState(false);
     const requestId = useRef(0);
 
+    const handleViewIn3D = useCallback((pole: Pole) => {
+        setSelectedPole(pole);
+        setActiveTab('3d');
+    }, []);
+
     const handleBoundsChange = useCallback(async (
         south: number, west: number, north: number, east: number, zoom: number
     ) => {
@@ -87,6 +92,7 @@ function App() {
                         isSearching={isSearching}
                         isZoomedOut={isZoomedOut}
                         onPoleSelect={setSelectedPole}
+                        onViewIn3D={handleViewIn3D}
                     />
                 </div>
             )}
