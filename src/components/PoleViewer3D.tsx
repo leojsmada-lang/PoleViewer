@@ -70,6 +70,8 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         setLidarProgress(0);
         setLidarError('');
 
+        const poleHeight = pole.height ?? 40; // default to 40 ft when OSM omits the tag
+
         // ── SCENE SETUP ──────────────────────────────────────────────────────
         // A Scene is the container for all 3D objects, lights, and cameras.
         const scene = new THREE.Scene();
@@ -84,8 +86,8 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         //   0.1 = near clipping plane — objects closer than this are not drawn
         //   1000 = far clipping plane — objects farther than this are not drawn
         const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 5000);
-        camera.position.set(15, pole.height * 0.7, 20);
-        camera.lookAt(0, pole.height * 0.5, 0); // aim the camera at the mid-point of the pole
+        camera.position.set(15, poleHeight * 0.7, 20);
+        camera.lookAt(0, poleHeight * 0.5, 0);
 
         // WebGLRenderer draws the scene to a <canvas> element.
         // antialias: true smooths jagged edges (costs a small amount of GPU performance).
@@ -109,7 +111,7 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         let sphericalTheta = Math.PI / 4;    // start at 45° horizontal
         let sphericalPhi   = Math.PI / 3;    // start at 60° vertical (slightly above horizon)
         let radius = 25;
-        const target = new THREE.Vector3(0, pole.height * 0.5, 0); // orbit around pole midpoint
+        const target = new THREE.Vector3(0, poleHeight * 0.5, 0);
 
         // Converts spherical coordinates back to Cartesian (x,y,z) for the camera position.
         const updateCamera = () => {
@@ -181,15 +183,10 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         // ── POLE MESH ─────────────────────────────────────────────────────────
         // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments)
         // A utility pole is slightly tapered (wider at base), hence 0.15 vs 0.25.
-        let poleColor: number;
-        if (pole.condition === 'Good')      poleColor = 0x00AA00; // green
-        else if (pole.condition === 'Fair') poleColor = 0xFF8800; // orange
-        else                                poleColor = 0xCC0000; // red
-
-        const poleGeo = new THREE.CylinderGeometry(0.15, 0.25, pole.height, 12);
-        const poleMat = new THREE.MeshLambertMaterial({ color: poleColor });
+        const poleGeo = new THREE.CylinderGeometry(0.15, 0.25, poleHeight, 12);
+        const poleMat = new THREE.MeshLambertMaterial({ color: 0x8B6914 }); // weathered wood
         const poleMesh = new THREE.Mesh(poleGeo, poleMat);
-        poleMesh.position.y = pole.height / 2; // CylinderGeometry is centered at Y=0; shift up so base is at ground
+        poleMesh.position.y = poleHeight / 2; // CylinderGeometry is centered at Y=0; shift up so base is at ground
         poleMesh.castShadow = true;
         scene.add(poleMesh);
 
@@ -229,17 +226,12 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
             scene.add(new THREE.Line(wireGeo, wireLineMat));
         });
 
-        // ── CONDITION BALL ────────────────────────────────────────────────────
-        // A glowing sphere on top of the pole as a quick visual condition indicator.
-        // MeshBasicMaterial is unlit — it always shows at full brightness,
-        // making it visible even when the sun is on the other side.
-        const ballColor = pole.condition === 'Good' ? 0x00FF00
-            : pole.condition === 'Fair' ? 0xFF8800 : 0xFF0000;
-        const ballGeo = new THREE.SphereGeometry(0.4, 16, 16);
-        const ballMat = new THREE.MeshBasicMaterial({ color: ballColor });
-        const ball = new THREE.Mesh(ballGeo, ballMat);
-        ball.position.y = pole.height + 0.7;
-        scene.add(ball);
+        // ── POLE CAP ──────────────────────────────────────────────────────────
+        const capGeo = new THREE.SphereGeometry(0.3, 12, 12);
+        const capMat = new THREE.MeshLambertMaterial({ color: 0x555555 });
+        const cap = new THREE.Mesh(capGeo, capMat);
+        cap.position.y = poleHeight + 0.3;
+        scene.add(cap);
 
         // ── ANIMATION LOOP ────────────────────────────────────────────────────
         // requestAnimationFrame asks the browser to call `animate` before the next

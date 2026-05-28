@@ -1,6 +1,5 @@
 // overpassService.ts — fetches real utility pole locations from OpenStreetMap.
 //
-// OpenStreetMap (OSM) is a free, community-maintained map of the world.
 // The Overpass API lets you query OSM data with a SQL-like language.
 // Power poles are tagged with power=pole in OSM.
 //
@@ -21,29 +20,18 @@ interface OverpassResponse {
   elements: OverpassElement[];
 }
 
-// How far (in degrees) to search around each pole's lat/lng.
-// 0.05° ≈ 5.5 km — wide enough to find several real poles nearby.
-const SEARCH_RADIUS_DEG = 0.05;
-
 /**
- * Fetches real power pole locations from OpenStreetMap for the area
- * surrounding the given lat/lng, up to maxPoles results.
+ * Finds the nearest OSM power pole within 500 m of the given lat/lng.
+ * Uses the Overpass `around` filter which constrains results to a radius
+ * around a point rather than a rectangular bounding box.
  *
- * Returns an array of Pole objects ready to use in the app.
- * Returns an empty array if the network request fails (graceful degradation).
+ * Returns null if no pole is found nearby or the request fails.
  */
-export async function fetchPolesFromOSM(
-  lat: number,
-  lng: number,
-  maxPoles = 20,
-): Promise<Pole[]> {
-  const south = (lat - SEARCH_RADIUS_DEG).toFixed(6);
-  const west  = (lng - SEARCH_RADIUS_DEG).toFixed(6);
-  const north = (lat + SEARCH_RADIUS_DEG).toFixed(6);
-  const east  = (lng + SEARCH_RADIUS_DEG).toFixed(6);
-
-  // Overpass QL: find nodes tagged power=pole within the bounding box.
-  const query = `[out:json][timeout:20];node["power"="pole"](${south},${west},${north},${east});out body;`;
+export async function findNearestPole(lat: number, lng: number): Promise<Pole | null> {
+  // around:500 = search within 500 metres of the given point.
+  // Fetching up to 10 candidates lets us pick the geometrically nearest one
+  // ourselves, since Overpass returns results sorted by node ID, not distance.
+  const query = `[out:json][timeout:10];node["power"="pole"](around:500,${lat},${lng});out body 10;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
 
   try {
@@ -51,32 +39,22 @@ export async function fetchPolesFromOSM(
     if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
     const data: OverpassResponse = await res.json();
 
-    // Convert OSM nodes → Pole objects. OSM doesn't carry inspection fields
-    // (height, age, condition) so we assign plausible defaults; a real app
-    // would pull these from a utility company backend.
-    const poles: Pole[] = data.elements
-      .filter(el => el.type === 'node' && el.lat && el.lon)
-      .slice(0, maxPoles)
-      .map((el, idx): Pole => {
-        const heightFt = parseFeet(el.tags?.['height']) ?? 40;
-        const condition = assignCondition(el.tags);
-        const attachments = buildAttachments(el.tags);
-        return {
-          id:        el.id,
-          latitude:  el.lat,
-          longitude: el.lon,
-          height:    heightFt,
-          age:       10, // OSM doesn't carry installation date — use neutral default
-          condition,
-          attachments,
-        };
-      });
+    const nodes = data.elements.filter(el => el.type === 'node' && el.lat && el.lon);
+    if (nodes.length === 0) return null;
 
-    console.log(`[overpass] Loaded ${poles.length} poles from OSM near (${lat}, ${lng})`);
-    return poles;
+    // Pick the node closest to the clicked point by straight-line distance.
+    // Math.hypot(dx, dy) is the 2D Euclidean distance — accurate enough at this scale.
+    const nearest = nodes.reduce((best, el) => {
+      const d  = Math.hypot(el.lat - lat, el.lon - lng);
+      const db = Math.hypot(best.lat - lat, best.lon - lng);
+      return d < db ? el : best;
+    });
+
+    console.log(`[overpass] Nearest pole OSM id=${nearest.id} at (${nearest.lat}, ${nearest.lon})`);
+    return nodeToP(nearest);
   } catch (err) {
-    console.warn('[overpass] Failed to fetch poles from OSM:', err);
-    return [];
+    console.warn('[overpass] findNearestPole failed:', err);
+    return null;
   }
 }
 
@@ -84,29 +62,26 @@ export async function fetchPolesFromOSM(
 // Helpers
 // ---------------------------------------------------------------------------
 
+function nodeToP(el: OverpassElement): Pole {
+  return {
+    id:          el.id,
+    latitude:    el.lat,
+    longitude:   el.lon,
+    height:      parseFeet(el.tags?.['height']) ?? undefined,
+    attachments: buildAttachments(el.tags),
+  };
+}
+
 function parseFeet(raw: string | undefined): number | null {
   if (!raw) return null;
-  // OSM height is usually in metres ("12" or "12 m"), sometimes feet ("40 ft")
   const match = raw.match(/^([\d.]+)\s*(ft|')?/i);
   if (!match) return null;
   const val = parseFloat(match[1]);
   const isFeet = /ft|'/i.test(match[2] ?? '');
-  return isFeet ? Math.round(val) : Math.round(val * 3.281); // convert m → ft
-}
-
-function assignCondition(tags?: Record<string, string>): 'Good' | 'Fair' | 'Poor' {
-  // Some OSM poles carry condition tags; most don't — rotate through the three
-  // values so the demo looks varied.
-  const cond = tags?.['condition'] ?? tags?.['state'] ?? '';
-  if (/good|excellent|new/i.test(cond))   return 'Good';
-  if (/bad|poor|damaged|broken/i.test(cond)) return 'Poor';
-  if (/fair|ok|average/i.test(cond))      return 'Fair';
-  // No tag — deterministically assign based on OSM node ID parity
-  return 'Good'; // default; App can randomise if desired
+  return isFeet ? Math.round(val) : Math.round(val * 3.281);
 }
 
 function buildAttachments(tags?: Record<string, string>): Attachment[] {
-  // OSM power poles may carry line voltage tags indicating what's attached.
   const attachments: Attachment[] = [
     { id: 1, type: 'Power', height: 35, diameter: 0.5 },
   ];

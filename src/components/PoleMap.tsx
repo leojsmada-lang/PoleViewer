@@ -1,104 +1,148 @@
-// PoleMap.tsx — interactive map view showing all poles as clickable markers.
+// PoleMap.tsx — interactive map view.
 //
-// Uses react-leaflet, which wraps the Leaflet.js mapping library in React
-// components. Leaflet renders an interactive map (pan/zoom) using map tiles
-// fetched from a tile server (OpenStreetMap in this case).
+// The user clicks anywhere on the map; the click coordinates are passed up to
+// App.tsx which queries OSM and returns the nearest pole. That pole is then
+// displayed as a marker here.
+//
+// useMapEvents is a react-leaflet hook that lets a child component subscribe
+// to Leaflet map events (click, zoom, move, etc.) without needing a ref to
+// the map instance directly.
 
 import React from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
 import { Pole } from '../types/Pole';
 import PoleCard from './PoleCard';
 
+// A small child component whose only job is to listen for map clicks and
+// forward them to the parent. It renders nothing — returning null is valid JSX.
+const ClickHandler: React.FC<{ onClick: (lat: number, lng: number) => void }> = ({ onClick }) => {
+    useMapEvents({
+        click(e) {
+            onClick(e.latlng.lat, e.latlng.lng);
+        },
+    });
+    return null;
+};
+
+// A red pin used to mark the user's clicked location while OSM is loading.
+const redIcon = new L.Icon({
+    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+    iconSize:   [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor:[1, -34],
+    shadowSize: [41, 41],
+});
+
 interface PoleMapProps {
-    onPoleSelect: (pole: Pole) => void;
-    selectedPole: Pole | null;
-    poles: Pole[];
+    onMapClick:    (lat: number, lng: number) => void;
+    clickPoint:    { lat: number; lng: number } | null; // where the user last clicked
+    nearestPole:   Pole | null;                          // OSM result (null while loading)
+    isSearching:   boolean;
+    onPoleSelect:  (pole: Pole) => void;
 }
 
-const PoleMap: React.FC<PoleMapProps> = ({ onPoleSelect, selectedPole, poles }) => {
+const PoleMap: React.FC<PoleMapProps> = ({
+    onMapClick,
+    clickPoint,
+    nearestPole,
+    isSearching,
+    onPoleSelect,
+}) => {
     return (
-        // Side-by-side layout: map on the left (flex: 2), detail panel on the right (flex: 1).
-        // flex: 2 means the map gets 2/3 of the space, the panel gets 1/3.
         <div style={{ display: 'flex', height: '500px', gap: '16px' }}>
 
-            {/* MAP PANEL ─────────────────────────────────────────────────────── */}
-            <div style={{ flex: 2, borderRadius: '8px', overflow: 'hidden' }}>
-                {/*
-                  MapContainer sets up the Leaflet map instance.
-                  - center: the initial lat/lng the map is centered on (Pole #1's location)
-                  - zoom: initial zoom level (13 = neighborhood scale)
-                  This component must only be rendered once — Leaflet doesn't support
-                  re-mounting the same map element, which is why it lives in its own component.
-                */}
+            {/* MAP PANEL */}
+            <div style={{ flex: 2, borderRadius: '8px', overflow: 'hidden', position: 'relative' }}>
                 <MapContainer
                     center={[33.4734, -84.4563]}
                     zoom={13}
                     style={{ height: '100%', width: '100%' }}
                 >
-                    {/*
-                      TileLayer fetches and displays the background map imagery.
-                      The URL template uses {s} (subdomain), {z} (zoom), {x}, {y}
-                      to request the correct map tile for the current view.
-                      OpenStreetMap is free and open — no API key required.
-                    */}
                     <TileLayer
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                         attribution='&copy; OpenStreetMap contributors'
                     />
 
-                    {/*
-                      Render one Marker per pole. Each Marker sits at the pole's
-                      GPS coordinates and shows a Popup when clicked.
-                      eventHandlers wires up Leaflet events to React handlers —
-                      clicking a marker calls onPoleSelect, which updates the
-                      selectedPole state in App.tsx and shows the detail panel.
-                    */}
-                    {poles.map((pole: Pole) => (
+                    <ClickHandler onClick={onMapClick} />
+
+                    {/* Red pin at the clicked point — shown while loading */}
+                    {clickPoint && isSearching && (
+                        <Marker position={[clickPoint.lat, clickPoint.lng]} icon={redIcon}>
+                            <Popup>Searching for nearest pole…</Popup>
+                        </Marker>
+                    )}
+
+                    {/* Blue default marker for the found OSM pole */}
+                    {nearestPole && (
                         <Marker
-                            key={pole.id}
-                            position={[pole.latitude, pole.longitude]}
-                            eventHandlers={{
-                                click: () => onPoleSelect(pole)
-                            }}
+                            position={[nearestPole.latitude, nearestPole.longitude]}
+                            eventHandlers={{ click: () => onPoleSelect(nearestPole) }}
                         >
-                            {/* Popup appears as a small callout above the marker when clicked */}
                             <Popup>
-                                <strong>Pole #{pole.id}</strong><br />
-                                Condition: {pole.condition}<br />
-                                Height: {pole.height} ft<br />
-                                Age: {pole.age} years
+                                <strong>OSM Pole #{nearestPole.id}</strong><br />
+                                {nearestPole.height ? `Height: ${nearestPole.height} ft` : 'Height: unknown'}<br />
+                                Lat: {nearestPole.latitude.toFixed(5)}<br />
+                                Lng: {nearestPole.longitude.toFixed(5)}
                             </Popup>
                         </Marker>
-                    ))}
+                    )}
                 </MapContainer>
+
+                {/* Searching overlay hint */}
+                {isSearching && (
+                    <div style={{
+                        position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
+                        background: 'rgba(0,0,0,0.65)', color: '#fff',
+                        padding: '6px 14px', borderRadius: 20,
+                        fontSize: 13, fontFamily: 'monospace', zIndex: 1000,
+                        pointerEvents: 'none',
+                    }}>
+                        Searching OSM…
+                    </div>
+                )}
+
+                {/* Idle hint when nothing has been clicked yet */}
+                {!clickPoint && !isSearching && (
+                    <div style={{
+                        position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)',
+                        background: 'rgba(0,0,0,0.55)', color: '#fff',
+                        padding: '6px 14px', borderRadius: 20,
+                        fontSize: 13, fontFamily: 'monospace', zIndex: 1000,
+                        pointerEvents: 'none',
+                    }}>
+                        Click anywhere to find the nearest pole
+                    </div>
+                )}
             </div>
 
-            {/* DETAIL PANEL ───────────────────────────────────────────────────── */}
-            {/*
-              Shows a PoleCard for the selected pole, or a placeholder message
-              if no pole has been clicked yet.
-              The ternary `selectedPole ? <PoleCard .../> : <placeholder>` is
-              a common React pattern for conditional rendering.
-            */}
+            {/* DETAIL PANEL */}
             <div style={{
                 flex: 1,
-                overflowY: 'auto',       // scroll if the card is taller than the panel
+                overflowY: 'auto',
                 backgroundColor: '#f8f9fa',
                 borderRadius: '8px',
-                padding: '16px'
+                padding: '16px',
             }}>
-                <h3 style={{ margin: '0 0 16px 0', color: '#2c3e50' }}>
-                    Pole Details
-                </h3>
-                {selectedPole
-                    ? <PoleCard pole={selectedPole} />
-                    : (
-                        <div style={{ textAlign: 'center', color: '#999', marginTop: '40px' }}>
-                            <p>📍 Click a marker on the map</p>
-                            <p>to inspect a pole</p>
-                        </div>
-                    )
-                }
+                <h3 style={{ margin: '0 0 16px 0', color: '#2c3e50' }}>Pole Details</h3>
+                {isSearching && (
+                    <div style={{ textAlign: 'center', color: '#888', marginTop: '40px' }}>
+                        <p>Querying OpenStreetMap…</p>
+                    </div>
+                )}
+                {!isSearching && nearestPole && <PoleCard pole={nearestPole} />}
+                {!isSearching && !nearestPole && !clickPoint && (
+                    <div style={{ textAlign: 'center', color: '#999', marginTop: '40px' }}>
+                        <p>Click the map to find a nearby pole</p>
+                    </div>
+                )}
+                {!isSearching && !nearestPole && clickPoint && (
+                    <div style={{ textAlign: 'center', color: '#c0392b', marginTop: '40px' }}>
+                        <p>No pole found within 500 m.</p>
+                        <p style={{ fontSize: 12 }}>Try clicking closer to a road or power line.</p>
+                    </div>
+                )}
             </div>
         </div>
     );
