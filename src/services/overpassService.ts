@@ -31,7 +31,7 @@ export async function findNearestPole(lat: number, lng: number): Promise<Pole | 
   // around:500 = search within 500 metres of the given point.
   // Fetching up to 10 candidates lets us pick the geometrically nearest one
   // ourselves, since Overpass returns results sorted by node ID, not distance.
-  const query = `[out:json][timeout:10];node["power"="pole"](around:500,${lat},${lng});out body 10;`;
+  const query = `[out:json][timeout:15];node["power"="pole"](around:1500,${lat},${lng});out body 20;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
 
   try {
