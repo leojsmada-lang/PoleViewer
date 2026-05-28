@@ -139,7 +139,7 @@ const PoleMap: React.FC<PoleMapProps> = ({
                 )}
                 {!isSearching && !nearestPole && clickPoint && (
                     <div style={{ textAlign: 'center', color: '#c0392b', marginTop: '40px' }}>
-                        <p>No pole found within 500 m.</p>
+                        <p>No pole found within 1,500 m.</p>
                         <p style={{ fontSize: 12 }}>Try clicking closer to a road or power line.</p>
                     </div>
                 )}
