@@ -197,27 +197,6 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         arm.position.y = armY;
         scene.add(arm);
 
-        // Diagonal braces: angled supports that run from the pole body up to each arm end.
-        // dx/dy define the brace endpoint relative to the pole centre.
-        const braceDX  = armHalfLen * 0.7; // horizontal reach
-        const braceDY  = 2.5;              // vertical drop below crossarm
-        const braceLen = Math.sqrt(braceDX * braceDX + braceDY * braceDY);
-        const braceAng = Math.atan2(braceDX, braceDY); // tilt angle from vertical
-
-        [-1, 1].forEach(side => {
-            const braceGeo = new THREE.CylinderGeometry(0.04, 0.05, braceLen, 6);
-            const brace    = new THREE.Mesh(braceGeo, armMat);
-            brace.rotation.z = side * braceAng;
-            brace.position.set(side * braceDX / 2, armY - braceDY / 2, 0);
-            scene.add(brace);
-        });
-
-        // ── POLE CAP ──────────────────────────────────────────────────────────
-        const capGeo = new THREE.SphereGeometry(0.3, 12, 12);
-        const capMat = new THREE.MeshLambertMaterial({ color: 0x555555 });
-        const cap = new THREE.Mesh(capGeo, capMat);
-        cap.position.y = poleHeight + 0.3;
-        scene.add(cap);
 
         // ── ANIMATION LOOP ────────────────────────────────────────────────────
         // requestAnimationFrame asks the browser to call `animate` before the next
