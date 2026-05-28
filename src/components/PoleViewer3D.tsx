@@ -36,12 +36,6 @@ function latLngToWebMercator(lat: number, lng: number): [number, number] {
     return [x, y];
 }
 
-// Color map for the wire/insulator on each attachment type (as hex integers, not strings)
-const attachmentColors: Record<string, number> = {
-    Power:   0xFF2222, // red
-    Telecom: 0x2244FF, // blue
-    Fiber:   0x00DD44, // green
-};
 
 const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
     // useRef gives a stable reference to the DOM div that Three.js renders into.
@@ -184,46 +178,38 @@ const PoleViewer3D: React.FC<PoleViewer3DProps> = ({ pole }) => {
         // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments)
         // A utility pole is slightly tapered (wider at base), hence 0.15 vs 0.25.
         const poleGeo = new THREE.CylinderGeometry(0.15, 0.25, poleHeight, 12);
-        const poleMat = new THREE.MeshLambertMaterial({ color: 0x8B6914 }); // weathered wood
+        const poleMat = new THREE.MeshLambertMaterial({ color: 0x5C3D1E }); // creosote-treated wood
         const poleMesh = new THREE.Mesh(poleGeo, poleMat);
-        poleMesh.position.y = poleHeight / 2; // CylinderGeometry is centered at Y=0; shift up so base is at ground
+        poleMesh.position.y = poleHeight / 2;
         poleMesh.castShadow = true;
         scene.add(poleMesh);
 
-        // ── ATTACHMENTS (cross-arms + wires) ─────────────────────────────────
-        pole.attachments.forEach((att) => {
-            // Cross-arm: a horizontal cylinder rotated 90° around Z to lie flat
-            const armGeo = new THREE.CylinderGeometry(0.06, 0.06, 6, 8);
-            const armMat = new THREE.MeshLambertMaterial({ color: 0x4A3728 }); // dark wood brown
-            const arm = new THREE.Mesh(armGeo, armMat);
-            arm.rotation.z = Math.PI / 2; // rotate from vertical to horizontal
-            arm.position.y = att.height;
-            scene.add(arm);
+        // ── CROSSARM ──────────────────────────────────────────────────────────
+        // One crossarm near the top of the pole with two diagonal braces below it.
+        // Real utility crossarms are ~8–10 ft wide and mounted ~85% up the pole.
+        const armY       = poleHeight * 0.85;
+        const armHalfLen = 4.5; // 9 ft total span
+        const armMat     = new THREE.MeshLambertMaterial({ color: 0x4A2E10 });
 
-            const wColor = attachmentColors[att.type] || 0xFFFFFF;
+        const armGeo = new THREE.CylinderGeometry(0.08, 0.10, armHalfLen * 2, 8);
+        const arm    = new THREE.Mesh(armGeo, armMat);
+        arm.rotation.z = Math.PI / 2; // rotate vertical cylinder to horizontal
+        arm.position.y = armY;
+        scene.add(arm);
 
-            // Two insulators (spheres) at each end of the cross-arm
-            const insGeo = new THREE.SphereGeometry(0.18, 8, 8);
-            const insMat = new THREE.MeshLambertMaterial({ color: wColor });
-            [-3, 3].forEach(xPos => {
-                const ins = new THREE.Mesh(insGeo, insMat);
-                ins.position.set(xPos, att.height, 0);
-                scene.add(ins);
-            });
+        // Diagonal braces: angled supports that run from the pole body up to each arm end.
+        // dx/dy define the brace endpoint relative to the pole centre.
+        const braceDX  = armHalfLen * 0.7; // horizontal reach
+        const braceDY  = 2.5;              // vertical drop below crossarm
+        const braceLen = Math.sqrt(braceDX * braceDX + braceDY * braceDY);
+        const braceAng = Math.atan2(braceDX, braceDY); // tilt angle from vertical
 
-            // Wire with catenary sag: a line drawn through 21 points.
-            // Math.sin(t * π) produces a bell curve that peaks at t=0.5 (mid-span) —
-            // multiplied by 0.5 to make the sag subtle.
-            const wirePoints: THREE.Vector3[] = [];
-            for (let i = 0; i <= 20; i++) {
-                const t = i / 20;             // 0 to 1 across the span
-                const x = -3 + t * 6;         // from left insulator to right insulator
-                const sag = Math.sin(t * Math.PI) * 0.5; // downward droop at centre
-                wirePoints.push(new THREE.Vector3(x, att.height - sag, 0));
-            }
-            const wireGeo = new THREE.BufferGeometry().setFromPoints(wirePoints);
-            const wireLineMat = new THREE.LineBasicMaterial({ color: wColor });
-            scene.add(new THREE.Line(wireGeo, wireLineMat));
+        [-1, 1].forEach(side => {
+            const braceGeo = new THREE.CylinderGeometry(0.04, 0.05, braceLen, 6);
+            const brace    = new THREE.Mesh(braceGeo, armMat);
+            brace.rotation.z = side * braceAng;
+            brace.position.set(side * braceDX / 2, armY - braceDY / 2, 0);
+            scene.add(brace);
         });
 
         // ── POLE CAP ──────────────────────────────────────────────────────────
