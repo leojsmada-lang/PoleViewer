@@ -50,5 +50,10 @@
   },
   "devDependencies": {
     "@types/three": "~0.150.2"
-  }
+  },
+  "jest": {
+  "transformIgnorePatterns": [
+    "node_modules/(?!(react-leaflet|@react-leaflet|leaflet)/)"
+  ]
+  } 
 }
