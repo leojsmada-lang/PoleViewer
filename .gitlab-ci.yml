@@ -21,6 +21,8 @@ test:
   cache:
     paths:
       - node_modules/
+  variables:
+    CI: "true"
   script:
     - npm install --legacy-peer-deps
-    - CI=true npm test -- --watchAll=false --passWithNoTests
+    - npm test -- --watchAll=false --passWithNoTests --forceExit --transformIgnorePatterns="node_modules/(?!(react-leaflet|@react-leaflet|leaflet)/)"
