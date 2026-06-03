@@ -1,6 +1,7 @@
 stages:
   - build
   - test
+  - security
 
 build:
   stage: build
@@ -21,8 +22,29 @@ test:
   cache:
     paths:
       - node_modules/
-  variables:
-    CI: "true"
   script:
     - npm install --legacy-peer-deps
-    - npm test -- --watchAll=false --passWithNoTests --forceExit --transformIgnorePatterns="node_modules/(?!(react-leaflet|@react-leaflet|leaflet)/)"
+    - CI=true npm test -- --watchAll=false --passWithNoTests --forceExit
+
+secret_detection:
+  stage: security
+  image: node:18
+  script:
+    - npm install --legacy-peer-deps
+    - npx secretlint "**/*"
+  allow_failure: true
+
+dependency_scan:
+  stage: security
+  image: node:18
+  cache:
+    paths:
+      - node_modules/
+  script:
+    - npm install --legacy-peer-deps
+    - npm audit --json > audit-report.json || true
+    - cat audit-report.json
+  artifacts:
+    paths:
+      - audit-report.json
+  allow_failure: true
