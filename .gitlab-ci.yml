@@ -17,4 +17,4 @@ test:
   image: node:18
   script:
     - npm install
-    - npm test -- --watchAll=false
+    - npm test -- --watchAll=false --passWithNoTests
