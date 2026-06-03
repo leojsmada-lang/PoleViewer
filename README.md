@@ -44,3 +44,8 @@ You don’t have to ever use `eject`. The curated feature set is suitable for sm
 You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
 
 To learn React, check out the [React documentation](https://reactjs.org/).
+
+## CI/CD
+This project uses a GitLab CI/CD pipeline that automatically builds and 
+tests on every push. The pipeline includes a build stage and a test stage 
+using Jest and React Testing Library.
