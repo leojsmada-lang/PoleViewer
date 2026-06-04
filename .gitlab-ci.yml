@@ -28,10 +28,10 @@ test:
 
 secret_detection:
   stage: security
-  image: node:18
+  image: node:22
   script:
-    - npm install --legacy-peer-deps
-    - npx secretlint "**/*"
+    - npm install -g secretlint @secretlint/secretlint-rule-preset-recommend
+    - secretlint "**/*"
   allow_failure: true
 
 dependency_scan:
