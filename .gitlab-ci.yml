@@ -2,7 +2,7 @@ stages:
   - build
   - test
   - security
-
+  - deploy
 build:
   stage: build
   image: node:18
@@ -48,3 +48,13 @@ dependency_scan:
     paths:
       - audit-report.json
   allow_failure: true
+
+deploy:
+  stage: deploy
+  environment:
+    name: production
+    url: https://pole-viewer-click-to-select.dmxecm9id69sq.amplifyapp.com/
+  script:
+    - echo "Deployed to production via AWS Amplify"
+  only:
+    - main
