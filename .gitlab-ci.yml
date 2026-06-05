@@ -1,21 +1,29 @@
+# ── Stages ──────────────────────────────────────────────────────────────────
+# Defines the order stages run. Each stage waits for the previous to pass.
 stages:
-  - build
-  - test
-  - security
+  - build      # Compile the React/TypeScript app
+  - test       # Run automated regression tests
+  - security   # Scan for vulnerabilities and exposed secrets
+  - docker     # Build and push container image to GitLab registry
+  - deploy     # Mark production environment as deployed
 
+# ── Build ────────────────────────────────────────────────────────────────────
+# Compiles the React app and saves the output as an artifact for later stages
 build:
   stage: build
-  image: node:18
+  image: node:18                      # Use Node.js 18 as the base environment
   cache:
     paths:
-      - node_modules/
+      - node_modules/                 # Cache dependencies to speed up future runs
   script:
-    - npm install --legacy-peer-deps
-    - npm run build
+    - npm install --legacy-peer-deps  # --legacy-peer-deps handles React 19 peer dependency conflicts
+    - npm run build                   # Compile TypeScript and bundle React app for production
   artifacts:
     paths:
-      - build/
+      - build/                        # Save compiled output so other jobs can access it
 
+# ── Test ─────────────────────────────────────────────────────────────────────
+# Runs automated tests to verify the app renders correctly
 test:
   stage: test
   image: node:18
@@ -25,15 +33,25 @@ test:
   script:
     - npm install --legacy-peer-deps
     - CI=true npm test -- --watchAll=false --passWithNoTests --forceExit
+    # CI=true tells react-scripts it is running in a pipeline, prevents browser launch
+    # --watchAll=false runs tests once instead of watching for file changes
+    # --passWithNoTests prevents failure if no test files exist
+    # --forceExit ensures Jest exits cleanly after all tests finish
 
+# ── Security: Secret Detection ───────────────────────────────────────────────
+# Scans the entire codebase for accidentally committed sensitive data
+# Catches: AWS keys, API tokens, passwords, private keys, connection strings
 secret_detection:
   stage: security
-  image: node:22
+  image: node:22                      # Secretlint requires Node 22 or higher
   script:
     - npm install -g secretlint @secretlint/secretlint-rule-preset-recommend
-    - secretlint "**/*"
-  allow_failure: true
+    - secretlint "**/*"               # Scan all files recursively from project root
+  allow_failure: true                 # Reports findings but does not block the pipeline
 
+# ── Security: Dependency Scan ────────────────────────────────────────────────
+# Checks all npm packages against the known vulnerability database
+# Saves a full JSON report as a downloadable artifact for audit trail
 dependency_scan:
   stage: security
   image: node:18
@@ -43,8 +61,47 @@ dependency_scan:
   script:
     - npm install --legacy-peer-deps
     - npm audit --json > audit-report.json || true
-    - cat audit-report.json
+    # || true prevents the job from failing just because vulnerabilities exist
+    # The report is saved regardless so we still have a record
+    - cat audit-report.json           # Print report contents to the job log
   artifacts:
     paths:
-      - audit-report.json
-  allow_failure: true
+      - audit-report.json             # Persist report for download and historical reference
+  allow_failure: true                 # Warns but does not block pipeline
+
+# ── Docker: Build and Push ───────────────────────────────────────────────────
+# Builds a production Docker container from the Dockerfile in the project root
+# Pushes to GitLab Container Registry tagged with commit SHA for full traceability
+# Every build is uniquely identified so any version can be re-deployed
+docker_build:
+  stage: docker
+  image: docker:24                    # Docker-in-Docker capable image
+  services:
+    - docker:24-dind                  # Starts a Docker daemon inside the GitLab runner
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"     # Required for secure Docker-in-Docker communication
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    # CI_REGISTRY_IMAGE — GitLab auto-provides the registry path for this project
+    # CI_COMMIT_SHORT_SHA — first 8 chars of commit ID e.g. pole-viewer:a1b2c3d4
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    # GitLab automatically provides all three CI_ variables above
+    # No manual credentials or secrets need to be configured
+  script:
+    - docker build -t $IMAGE_TAG .              # Build container using project Dockerfile
+    - docker push $IMAGE_TAG                    # Push commit-specific tag to registry
+    - docker tag $IMAGE_TAG $CI_REGISTRY_IMAGE:latest  # Also apply latest tag
+    - docker push $CI_REGISTRY_IMAGE:latest     # Push latest so it is always easy to find
+
+# ── Deploy ───────────────────────────────────────────────────────────────────
+# Registers this pipeline run as a production deployment in GitLab Environments
+# Creates a deployment history log and a direct link to the live application
+deploy:
+  stage: deploy
+  environment:
+    name: production
+    url: https://pole-viewer-click-to-select.dmxecm9id69sq.amplifyapp.com/
+  script:
+    - echo "Deployed to production via AWS Amplify"
+  only:
+    - main                            # Only runs on pushes to main branch, not feature branches
