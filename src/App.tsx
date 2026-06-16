@@ -13,6 +13,7 @@ function App() {
     const [activeTab, setActiveTab]       = useState<'map' | '3d'>('map');
     const [isSearching, setIsSearching]   = useState(false);
     const [isZoomedOut, setIsZoomedOut]   = useState(false);
+    const [searchError, setSearchError]   = useState('');
     const requestId = useRef(0);
 
     const handleViewIn3D = useCallback((pole: Pole) => {
@@ -27,6 +28,7 @@ function App() {
             setIsZoomedOut(true);
             setNearbyPoles([]);
             setSelectedPole(null);
+            setSearchError('');
             return;
         }
         setIsZoomedOut(false);
@@ -34,13 +36,25 @@ function App() {
         // Discard responses that arrive after a newer request has started.
         const id = ++requestId.current;
         setIsSearching(true);
-        const poles = await findPolesInBounds(south, west, north, east);
-        if (id !== requestId.current) return;
+        setSearchError('');
 
-        setIsSearching(false);
-        setNearbyPoles(poles);
-        // Keep the selection only if the pole is still in the new result set.
-        setSelectedPole(prev => (prev && poles.some(p => p.id === prev.id) ? prev : null));
+        try {
+            const poles = await findPolesInBounds(south, west, north, east);
+            if (id !== requestId.current) return;
+
+            setIsSearching(false);
+            setNearbyPoles(poles);
+            setSearchError('');
+            // Keep the selection only if the pole is still in the new result set.
+            setSelectedPole(prev => (prev && poles.some(p => p.id === prev.id) ? prev : null));
+        } catch (err: any) {
+            if (id !== requestId.current) return;
+
+            setIsSearching(false);
+            setNearbyPoles([]);
+            setSelectedPole(null);
+            setSearchError(err?.message ?? 'Unable to query OpenStreetMap.');
+        }
     }, []);
 
     const tabStyle = (tab: 'map' | '3d'): React.CSSProperties => ({
@@ -91,6 +105,7 @@ function App() {
                         selectedPole={selectedPole}
                         isSearching={isSearching}
                         isZoomedOut={isZoomedOut}
+                        searchError={searchError}
                         onPoleSelect={setSelectedPole}
                         onViewIn3D={handleViewIn3D}
                     />

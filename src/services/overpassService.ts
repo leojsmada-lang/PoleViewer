@@ -29,17 +29,24 @@ export async function findPolesInBounds(
 ): Promise<Pole[]> {
   const query = `[out:json][timeout:25];node["power"="pole"](${south},${west},${north},${east});out body 200;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 25000);
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
     const data: OverpassResponse = await res.json();
     const nodes = data.elements.filter(el => el.type === 'node' && el.lat && el.lon);
     console.log(`[overpass] Found ${nodes.length} poles in viewport`);
     return nodes.map(nodeToP);
-  } catch (err) {
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      throw new Error('OpenStreetMap query timed out after 25 seconds. The external Overpass service may be unavailable.');
+    }
     console.warn('[overpass] findPolesInBounds failed:', err);
-    return [];
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 

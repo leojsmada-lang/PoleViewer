@@ -55,6 +55,7 @@ interface PoleMapProps {
     selectedPole:   Pole | null;
     isSearching:    boolean;
     isZoomedOut:    boolean;
+    searchError:    string;
     onPoleSelect:   (pole: Pole) => void;
     onViewIn3D:     (pole: Pole) => void;
 }
@@ -65,6 +66,7 @@ const PoleMap: React.FC<PoleMapProps> = ({
     selectedPole,
     isSearching,
     isZoomedOut,
+    searchError,
     onPoleSelect,
     onViewIn3D,
 }) => {
@@ -122,15 +124,20 @@ const PoleMap: React.FC<PoleMapProps> = ({
                 {isSearching && (
                     <div style={overlayStyle}>Querying OSM…</div>
                 )}
-                {isZoomedOut && !isSearching && (
+                {searchError && !isSearching && (
+                    <div style={{ ...overlayStyle, background: 'rgba(192,57,43,0.95)' }}>
+                        OpenStreetMap query failed — {searchError}
+                    </div>
+                )}
+                {isZoomedOut && !isSearching && !searchError && (
                     <div style={overlayStyle}>Zoom in (level {MIN_ZOOM}+) to see poles</div>
                 )}
-                {!isZoomedOut && !isSearching && nearbyPoles.length > 0 && (
+                {!isZoomedOut && !isSearching && !searchError && nearbyPoles.length > 0 && (
                     <div style={{ ...overlayStyle, background: 'rgba(39,174,96,0.85)' }}>
                         {nearbyPoles.length} pole{nearbyPoles.length !== 1 ? 's' : ''} in view — click a pin to select
                     </div>
                 )}
-                {!isZoomedOut && !isSearching && nearbyPoles.length === 0 && (
+                {!isZoomedOut && !isSearching && !searchError && nearbyPoles.length === 0 && (
                     <div style={overlayStyle}>No poles found in this area</div>
                 )}
             </div>
@@ -161,7 +168,13 @@ const PoleMap: React.FC<PoleMapProps> = ({
                         <p style={{ fontSize: 13, color: '#999' }}>Zoom in on the map to discover poles.</p>
                     </div>
                 )}
-                {!isSearching && !selectedPole && !isZoomedOut && nearbyPoles.length === 0 && (
+                {!isSearching && !selectedPole && !isZoomedOut && searchError && (
+                    <div style={detailHintStyle}>
+                        <p style={{ color: '#c0392b' }}>OpenStreetMap query failed.</p>
+                        <p style={{ fontSize: 12, color: '#999' }}>{searchError}</p>
+                    </div>
+                )}
+                {!isSearching && !selectedPole && !isZoomedOut && !searchError && nearbyPoles.length === 0 && (
                     <div style={detailHintStyle}>
                         <p style={{ color: '#c0392b' }}>No poles found in this area.</p>
                         <p style={{ fontSize: 12, color: '#999' }}>Try panning toward a road or power line.</p>
