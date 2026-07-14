@@ -20,6 +20,21 @@ interface OverpassResponse {
   elements: OverpassElement[];
 }
 
+// Public Overpass instances to try in order. overpass-api.de rate-limits
+// (HTTP 429) aggressively per-IP; falling back to a mirror lets the app
+// keep working when the primary instance is throttling us.
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+];
+
+// Tracks the in-flight request so a new viewport query can cancel the
+// previous one instead of letting them pile up against the public server —
+// fast panning was stacking up concurrent requests, which is exactly what
+// trips overpass-api.de's per-IP rate limit.
+let currentController: AbortController | null = null;
+
 /**
  * Returns all OSM power poles within the given map bounding box.
  * Capped at 200 results to keep rendering snappy.
@@ -27,23 +42,31 @@ interface OverpassResponse {
 export async function findPolesInBounds(
   south: number, west: number, north: number, east: number
 ): Promise<Pole[]> {
+  currentController?.abort();
+  const controller = new AbortController();
+  currentController = controller;
+  const timeout = window.setTimeout(() => controller.abort(), 25000);
+
   const bbox = `${south},${west},${north},${east}`;
   // Union of every common OSM tagging scheme for a power/telecom pole:
   //   power=pole          — classic tag for poles carrying power lines
   //   man_made=utility_pole — modern general-purpose pole tag (power or telecom)
   //   telecom=pole        — legacy tag still used for telecom-only poles
   const query = `[out:json][timeout:25];(node["power"="pole"](${bbox});node["man_made"="utility_pole"](${bbox});node["telecom"="pole"](${bbox}););out body 200;`;
-  const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 25000);
 
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-    const data: OverpassResponse = await res.json();
-    const nodes = data.elements.filter(el => el.type === 'node' && el.lat && el.lon);
-    console.log(`[overpass] Found ${nodes.length} poles in viewport`);
-    return nodes.map(nodeToP);
+    let lastStatus = 0;
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      const url = `${endpoint}?data=${encodeURIComponent(query)}`;
+      const res = await fetch(url, { signal: controller.signal });
+      if (res.status === 429) { lastStatus = 429; continue; } // rate-limited — try the next mirror
+      if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+      const data: OverpassResponse = await res.json();
+      const nodes = data.elements.filter(el => el.type === 'node' && el.lat && el.lon);
+      console.log(`[overpass] Found ${nodes.length} poles in viewport (via ${endpoint})`);
+      return nodes.map(nodeToP);
+    }
+    throw new Error(`Overpass HTTP ${lastStatus || 429} — all mirrors rate-limited, try again shortly.`);
   } catch (err: any) {
     if (err.name === 'AbortError') {
       throw new Error('OpenStreetMap query timed out after 25 seconds. The external Overpass service may be unavailable.');
