@@ -27,7 +27,12 @@ interface OverpassResponse {
 export async function findPolesInBounds(
   south: number, west: number, north: number, east: number
 ): Promise<Pole[]> {
-  const query = `[out:json][timeout:25];node["power"="pole"](${south},${west},${north},${east});out body 200;`;
+  const bbox = `${south},${west},${north},${east}`;
+  // Union of every common OSM tagging scheme for a power/telecom pole:
+  //   power=pole          — classic tag for poles carrying power lines
+  //   man_made=utility_pole — modern general-purpose pole tag (power or telecom)
+  //   telecom=pole        — legacy tag still used for telecom-only poles
+  const query = `[out:json][timeout:25];(node["power"="pole"](${bbox});node["man_made"="utility_pole"](${bbox});node["telecom"="pole"](${bbox}););out body 200;`;
   const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 25000);
@@ -74,11 +79,18 @@ function parseFeet(raw: string | undefined): number | null {
 }
 
 function buildAttachments(tags?: Record<string, string>): Attachment[] {
-  const attachments: Attachment[] = [
-    { id: 1, type: 'Power', height: 35, diameter: 0.5 },
-  ];
-  if (tags?.['telecom'] || tags?.['communication:telephone']) {
-    attachments.push({ id: 2, type: 'Telecom', height: 28, diameter: 0.3 });
+  const utility   = tags?.['utility'];
+  const isPower   = tags?.['power'] === 'pole' || utility === 'power' || utility === 'distribution' || utility === 'transmission';
+  const isTelecom = tags?.['telecom'] === 'pole' || utility === 'telecom' || !!tags?.['communication:telephone'];
+
+  const attachments: Attachment[] = [];
+  // Default to Power when purpose isn't tagged at all (e.g. a bare
+  // man_made=utility_pole) — matches the app's original power=pole-only behavior.
+  if (isPower || (!isPower && !isTelecom)) {
+    attachments.push({ id: 1, type: 'Power', height: 35, diameter: 0.5 });
+  }
+  if (isTelecom) {
+    attachments.push({ id: attachments.length + 1, type: 'Telecom', height: 28, diameter: 0.3 });
   }
   return attachments;
 }
